@@ -3,7 +3,7 @@ name: Deploy MVP Production
 on:
   push:
     branches:
-      - main
+      - master
 
 env:
   GHCR_USER: ${{ secrets.GHCR_USER }}
