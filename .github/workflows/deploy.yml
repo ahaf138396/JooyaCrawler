@@ -5,14 +5,6 @@ on:
     branches:
       - master
 
-env:
-  GHCR_USER: ${{ secrets.GHCR_USER }}
-  GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-  DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-
 jobs:
   build-and-push:
     name: Build & Push Docker Images
