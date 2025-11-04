@@ -1,9 +1,15 @@
 name: Deploy MVP Production
 
+# اگر مخزنت branch اصلی اش main است، این را تغییر بده یا هر دو را اضافه کن
 on:
   push:
     branches:
       - master
+
+# اجازه لازم برای کار با پکیج‌ها (برای استفاده از GITHUB_TOKEN)
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-push:
@@ -11,15 +17,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v1
+      # Login to GHCR using GITHUB_TOKEN (جایگزین: برای استفاده از PAT از secrets.GHCR_TOKEN استفاده کن)
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build and push image (مثال: تصویر با نام ghcr.io/<owner>/<repo>:latest)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          push: true
+          platforms: linux/amd64,linux/arm64
+          context: .
+          file: ./Dockerfile
+          tags: ghcr.io/${{ github.repository_owner }}/JooyaCrowler:latest
 
   deploy:
     name: Deploy to Server
