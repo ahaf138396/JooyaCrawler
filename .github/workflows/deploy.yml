@@ -19,10 +19,6 @@ jobs:
           username: ${{ secrets.GHCR_USER }}
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Build and push Crawler image
-        run: |
-          docker build -t ghcr.io/${{ secrets.GHCR_USER }}/crawler:latest ./JooyaCrowler
-          docker push ghcr.io/${{ secrets.GHCR_USER }}/crawler:latest
 
   deploy:
     name: Deploy to Server
