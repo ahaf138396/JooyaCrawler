@@ -52,10 +52,10 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
+      - name: Test SSH
+        run: ssh -o StrictHostKeyChecking=no -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "echo OK"
+
       - name: Deploy via SSH
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           ssh -o StrictHostKeyChecking=no -p ${{ secrets.DEPLOY_PORT }} ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
             cd /opt/search
