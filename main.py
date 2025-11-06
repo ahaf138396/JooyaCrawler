@@ -1,3 +1,1 @@
-print("hello world")
-print("hello Khoshgel")
-print(2)
+print("Test Docker, Github Actions : OK !")
