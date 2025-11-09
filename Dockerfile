@@ -3,13 +3,12 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# کل پروژه را کپی کن
+# پاک کردن نسخه‌های قدیمی redis (خیلی مهم)
+RUN pip uninstall -y redis redis-py || true && \
+    pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
+
 COPY . .
 
-# تنظیم PYTHONPATH تا مسیرها از /app قابل import باشند
-ENV PYTHONPATH=/app
-
-# اجرای ماژول crawler.main به صورت مطلق
 CMD ["python", "-m", "crawler.main"]
