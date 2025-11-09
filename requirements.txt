@@ -27,4 +27,16 @@ uvloop==0.21.0 ; sys_platform != "win32"
 # -------------------------------
 # Other
 # -------------------------------
+booktype
+httpx
+selectolax
+beautifulsoup4
+asyncpg
+pymongo
+redis>=5.0.1
+aioredis
+loguru
 pyyaml
+pydantic
+prometheus_client
+pydantic_settings
