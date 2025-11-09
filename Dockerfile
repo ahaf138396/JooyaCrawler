@@ -5,10 +5,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# تمام پوشه پروژه را کپی می‌کنیم
+# کل پروژه را کپی کن
 COPY . .
 
-# ورود به مسیر پروژه که ماژول crawler آنجاست
-WORKDIR /app/crawler
+# تنظیم PYTHONPATH تا مسیرها از /app قابل import باشند
+ENV PYTHONPATH=/app
 
-CMD ["python", "-m", "main"]
+# اجرای ماژول crawler.main به صورت مطلق
+CMD ["python", "-m", "crawler.main"]
