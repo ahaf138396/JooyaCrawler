@@ -43,4 +43,4 @@ if __name__ == "__main__":
         logger.warning("Shutting down gracefully...")
     except Exception as ex:
         logger.error(ex)
-        time.sleep(5)
+        time.sleep(70)
