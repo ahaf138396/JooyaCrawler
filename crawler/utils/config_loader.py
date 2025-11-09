@@ -5,14 +5,20 @@ from httpx import Timeout
 
 from pydantic_settings import BaseSettings
 
+from pydantic_settings import BaseSettings
+
 class Config(BaseSettings):
     redis_url: str
     postgres_url: str
     mongo_url: str
-    crawl_delay_default: int = 2
+    crawl_delay_default: float = 2.5
     crawler_workers: int = 5
-    request_timeout: int = 10  # ← زمان timeout درخواست‌ها به ثانیه
-    crawl_depth_limit: int = 3
+    request_timeout: int = 10
+
+    class Config:
+        env_file = "./env/crawler.env"
+        extra = "ignore"
+
     log_level: str = "INFO"
 
 def load_config() -> Config:
