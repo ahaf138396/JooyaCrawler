@@ -30,8 +30,6 @@ uvloop==0.21.0 ; sys_platform != "win32"
 booktype
 httpx
 selectolax
-beautifulsoup4
-asyncpg
 pymongo
 redis>=5.0.1
 aioredis
