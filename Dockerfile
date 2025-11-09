@@ -5,10 +5,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# کپی کل پوشه‌ی پروژه (که شامل crawler است)
+# تمام پوشه پروژه را کپی می‌کنیم
 COPY . .
 
-# کار در مسیر اصلی پروژه
+# ورود به مسیر پروژه که ماژول crawler آنجاست
 WORKDIR /app/crawler
 
-CMD ["python", "-m", "crawler.main"]
+CMD ["python", "-m", "main"]
