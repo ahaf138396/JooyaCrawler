@@ -1,3 +1,4 @@
+booktype
 httpx
 selectolax
 beautifulsoup4

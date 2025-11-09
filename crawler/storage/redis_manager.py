@@ -1,21 +1,23 @@
-import redis.asyncio as aioredis
 from loguru import logger
+import redis.asyncio as redis
 
 class RedisManager:
-    def __init__(self, url: str):
-        self.url = url
+    def __init__(self, redis_url: str):
+        self.redis_url = redis_url
         self.client = None
 
     async def connect(self):
-        self.client = aioredis.from_url(self.url, decode_responses=True)
-        logger.info(f"Connected to Redis: {self.url}")
+        self.client = await redis.from_url(
+            self.redis_url,
+            decode_responses=True
+        )
+        print(f"Connected to Redis: {self.redis_url}")
 
     async def enqueue_url(self, url: str):
         await self.client.lpush("crawler:queue", url)
 
     async def dequeue_url(self):
-        url = await self.client.rpop("crawler:queue")
-        return url
+        return await self.client.rpop("crawler:queue")
 
     async def add_to_visited(self, url: str):
         await self.client.sadd("crawler:visited", url)
