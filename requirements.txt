@@ -36,5 +36,4 @@ aioredis
 loguru
 pyyaml
 pydantic
-prometheus_client
 pydantic_settings
