@@ -1,4 +1,7 @@
 import asyncio
+import sys
+import time
+
 from loguru import logger
 from crawler.utils.config_loader import load_config
 from crawler.storage.redis_manager import RedisManager
@@ -38,3 +41,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.warning("Shutting down gracefully...")
+    except Exception as ex:
+        logger.error(ex)
+        time.sleep(5)
