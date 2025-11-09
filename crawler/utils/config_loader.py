@@ -3,7 +3,7 @@ import yaml
 from pydantic import BaseModel
 from httpx import Timeout
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 class Config(BaseSettings):
     redis_url: str
