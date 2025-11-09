@@ -1,2 +1,11 @@
-requests
+httpx
+selectolax
 beautifulsoup4
+asyncpg
+pymongo
+redis
+aioredis
+loguru
+pyyaml
+pydantic
+prometheus_client
