@@ -4,7 +4,7 @@ selectolax
 beautifulsoup4
 asyncpg
 pymongo
-redis
+redis>=5.0.1
 aioredis
 loguru
 pyyaml
