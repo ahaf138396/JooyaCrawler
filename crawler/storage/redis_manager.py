@@ -1,5 +1,7 @@
-from loguru import logger
-import redis.asyncio as redis
+try:
+    import redis.asyncio as redis
+except ImportError:
+    import redis as redis  # fallback for legacy
 
 class RedisManager:
     def __init__(self, redis_url: str):
@@ -7,11 +9,15 @@ class RedisManager:
         self.client = None
 
     async def connect(self):
-        self.client = await redis.from_url(
-            self.redis_url,
-            decode_responses=True
-        )
-        print(f"Connected to Redis: {self.redis_url}")
+        # redis.asyncio.from_url در نسخه‌های 4 به بالا وجود دارد
+        if hasattr(redis, "asyncio"):
+            self.client = await redis.from_url(self.redis_url, decode_responses=True)
+            print(f"Connected to Redis: {self.redis_url}")
+        else:
+            # نسخه‌های قدیمی اصلاً async ندارند، باید sync باشند
+            raise RuntimeError("Your redis-py version is too old. Please upgrade to >=4.2.0.")
+
+
 
     async def enqueue_url(self, url: str):
         await self.client.lpush("crawler:queue", url)
