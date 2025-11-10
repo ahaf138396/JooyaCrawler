@@ -2,7 +2,7 @@
 # Core Runtime & Async Stack
 # -------------------------------
 httpx==0.27.2
-redis>=5.0.1
+redis>=7.0.1
 #asyncpg==0.29.0
 motor==3.6.0           # Async MongoDB client
 pydantic==2.12.0
@@ -31,8 +31,6 @@ booktype
 httpx
 selectolax
 pymongo
-redis>=5.0.1
-aioredis
 loguru
 pyyaml
 pydantic
