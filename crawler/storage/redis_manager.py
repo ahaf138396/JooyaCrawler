@@ -20,25 +20,6 @@ class RedisManager:
         self.retry_delay = retry_delay
         self.client: Optional[Redis] = None
 
-    async def connect(self) -> None:
-        """Initialize async Redis connection with retry logic."""
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                self.client = await redisi.from_url(
-                    self.redis_url,
-                    decode_responses=True,
-                    socket_timeout=5,
-                    health_check_interval=30,
-                )
-                pong = await self.client.ping()
-                if pong:
-                    logger.info(f"Connected to Redis: {self.redis_url}")
-                    return
-            except Exception as e:
-                logger.warning(f"[Redis] Connection attempt {attempt} failed: {e}")
-                await asyncio.sleep(self.retry_delay)
-
-        raise ConnectionError(f"[Redis] Could not connect after {self.max_retries} retries.")
 
     async def enqueue_url(self, url: str) -> None:
         """Push a new URL into the crawl queue."""
