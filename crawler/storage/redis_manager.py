@@ -1,32 +1,76 @@
-try:
-    import redis.asyncio as redis
-except ImportError:
-    import redis as redis  # fallback for legacy
+import asyncio
+import logging
+import redis.asyncio as redis
+from redis.asyncio.client import Redis
+from typing import Optional
+
+
+logger = logging.getLogger(__name__)
+
 
 class RedisManager:
-    def __init__(self, redis_url: str):
+    """
+    RedisManager handles async connections, queuing, and retrieval of crawl URLs.
+    Supports secure authentication, retry logic, and graceful reconnection.
+    """
+
+    def __init__(self, redis_url: str, max_retries: int = 3, retry_delay: float = 2.0):
         self.redis_url = redis_url
-        self.client = None
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.client: Optional[Redis] = None
 
-    async def connect(self):
-        # redis.asyncio.from_url در نسخه‌های 4 به بالا وجود دارد
-        if hasattr(redis, "asyncio"):
-            self.client = await redis.from_url(self.redis_url, decode_responses=True)
-            print(f"Connected to Redis: {self.redis_url}")
-        else:
-            # نسخه‌های قدیمی اصلاً async ندارند، باید sync باشند
-            raise RuntimeError("Your redis-py version is too old. Please upgrade to >=4.2.0.")
+    async def connect(self) -> None:
+        """Initialize async Redis connection with retry logic."""
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                self.client = await redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_timeout=5,
+                    health_check_interval=30,
+                )
+                pong = await self.client.ping()
+                if pong:
+                    logger.info(f"Connected to Redis: {self.redis_url}")
+                    return
+            except Exception as e:
+                logger.warning(f"[Redis] Connection attempt {attempt} failed: {e}")
+                await asyncio.sleep(self.retry_delay)
 
+        raise ConnectionError(f"[Redis] Could not connect after {self.max_retries} retries.")
 
-
-    async def enqueue_url(self, url: str):
+    async def enqueue_url(self, url: str) -> None:
+        """Push a new URL into the crawl queue."""
+        if not self.client:
+            raise RuntimeError("Redis client is not connected.")
         await self.client.lpush("crawler:queue", url)
+        logger.debug(f"Enqueued URL: {url}")
 
-    async def dequeue_url(self):
-        return await self.client.rpop("crawler:queue")
+    async def dequeue_url(self) -> Optional[str]:
+        """Retrieve and remove one URL from the crawl queue."""
+        if not self.client:
+            raise RuntimeError("Redis client is not connected.")
+        url = await self.client.rpop("crawler:queue")
+        if url:
+            logger.debug(f"Dequeued URL: {url}")
+        return url
 
-    async def add_to_visited(self, url: str):
-        await self.client.sadd("crawler:visited", url)
+    async def cache_page(self, key: str, content: str, expire_seconds: int = 3600) -> None:
+        """Cache a crawled page temporarily."""
+        if not self.client:
+            raise RuntimeError("Redis client is not connected.")
+        await self.client.setex(f"page:{key}", expire_seconds, content)
+        logger.debug(f"Cached page under key {key}")
 
-    async def is_visited(self, url: str) -> bool:
-        return await self.client.sismember("crawler:visited", url)
+    async def get_cached_page(self, key: str) -> Optional[str]:
+        """Retrieve a cached page."""
+        if not self.client:
+            raise RuntimeError("Redis client is not connected.")
+        return await self.client.get(f"page:{key}")
+
+    async def disconnect(self) -> None:
+        """Gracefully close the Redis connection."""
+        if self.client:
+            await self.client.close()
+            logger.info("Redis connection closed.")
