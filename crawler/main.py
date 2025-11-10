@@ -16,6 +16,11 @@ async def main():
     logger.info("Configuration loaded successfully")
 
     # اتصال به دیتابیس‌ها
+
+
+    redis_manager = RedisManager(redis_url="redis://:StrongRedisPass!23@redis:6379")
+    await redis_manager.connect()
+
     redis = RedisManager(config.redis_url)
     postgres = PostgresManager(config.postgres_url)
     mongo = MongoManager(config.mongo_url)

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import redis.asyncio as redis
+import redis.asyncio as redisi
 from redis.asyncio.client import Redis
 from typing import Optional
 
@@ -24,7 +24,7 @@ class RedisManager:
         """Initialize async Redis connection with retry logic."""
         for attempt in range(1, self.max_retries + 1):
             try:
-                self.client = await redis.from_url(
+                self.client = await redisi.from_url(
                     self.redis_url,
                     decode_responses=True,
                     socket_timeout=5,
