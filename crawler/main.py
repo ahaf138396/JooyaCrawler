@@ -1,6 +1,9 @@
 import asyncio
 import sys
 import time
+import os
+os.system("pip show redis")
+time.sleep(10)
 
 from loguru import logger
 from crawler.utils.config_loader import load_config
