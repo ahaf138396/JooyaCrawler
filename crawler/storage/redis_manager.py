@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import redis.asyncio as redisi
+
 from redis.asyncio.client import Redis
 from typing import Optional
 
