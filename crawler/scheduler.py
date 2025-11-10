@@ -1,54 +1,18 @@
 import asyncio
-import time
-from urllib.parse import urlparse
 from loguru import logger
+from crawler.storage.postgres_queue_manager import PostgresQueueManager
 
 class Scheduler:
-    def __init__(self, redis, postgres, config):
-        self.redis = redis
-        self.postgres = postgres
-        self.config = config
-        self.domain_last_crawl = {}  # نگهداری زمان آخرین خزش هر دامنه برای crawl_delay
+    def __init__(self, queue: PostgresQueueManager):
+        self.queue = queue
 
     async def run(self):
         logger.info("Scheduler started...")
+        # این قسمت صرفاً برای تست: هر چند ثانیه یک URL جدید اضافه می‌کنیم
+        counter = 0
         while True:
-            try:
-                await self.schedule_new_urls()
-                await asyncio.sleep(2)  # تنظیم برای جلوگیری از مصرف CPU زیاد
-            except Exception as e:
-                logger.exception(f"Scheduler error: {e}")
-                await asyncio.sleep(5)
-
-    async def schedule_new_urls(self):
-        # دریافت تعدادی URL از دیتابیس یا منبع اولیه
-        urls = await self.postgres.get_unscheduled_urls(limit=20)
-        if not urls:
-            return
-
-        for url in urls:
-            # بررسی تکرار در Redis (visited)
-            if await self.redis.is_visited(url):
-                continue
-
-            # بررسی محدودیت زمانی دامنه (crawl_delay)
-            if not await self._can_crawl_now(url):
-                continue
-
-            # اضافه کردن به صف Redis
-            await self.redis.enqueue_url(url)
-            await self.postgres.mark_as_scheduled(url)
-            logger.debug(f"Scheduled URL: {url}")
-
-    async def _can_crawl_now(self, url: str) -> bool:
-        """بررسی زمان مجاز برای خزش دامنه"""
-        parsed = urlparse(url)
-        domain = parsed.netloc
-        delay = self.config.crawl_delay_default
-
-        last_time = self.domain_last_crawl.get(domain, 0)
-        now = time.time()
-        if now - last_time >= delay:
-            self.domain_last_crawl[domain] = now
-            return True
-        return False
+            url = f"https://example.com/page/{counter}"
+            await self.queue.enqueue_url(url)
+            logger.info(f"Added new URL to queue: {url}")
+            counter += 1
+            await asyncio.sleep(10)  # هر ۱۰ ثانیه یک لینک جدید

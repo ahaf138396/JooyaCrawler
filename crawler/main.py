@@ -1,54 +1,19 @@
 import asyncio
-import sys
-import time
-import os
-os.system("pip show redis")
-time.sleep(10)
-
-from loguru import logger
-from crawler.utils.config_loader import load_config
-from crawler.storage.redis_manager import RedisManager
-from crawler.storage.postgres_manager import PostgresManager
-from crawler.storage.mongo_manager import MongoManager
+from crawler.storage.postgres_init import init_postgres
+from crawler.storage.postgres_queue_manager import PostgresQueueManager
 from crawler.scheduler import Scheduler
 from crawler.worker import Worker
 
 async def main():
-    # بارگذاری تنظیمات
-    config = load_config()
-    logger.info("Configuration loaded successfully")
+    await init_postgres()
+    queue = PostgresQueueManager()
+    scheduler = Scheduler(queue)
 
-    # اتصال به دیتابیس‌ها
+    # ۳ Worker به صورت همزمان
+    workers = [Worker(queue, i).run() for i in range(3)]
 
-
-    redis_manager = RedisManager(redis_url="redis://:StrongRedisPass!23@redis:6379")
-    await redis_manager.connect()
-
-    redis = RedisManager(config.redis_url)
-    postgres = PostgresManager(config.postgres_url)
-    mongo = MongoManager(config.mongo_url)
-
-    await redis.connect()
-    await postgres.connect()
-    await mongo.connect()
-
-    logger.info("All databases connected successfully")
-
-    # راه‌اندازی Scheduler و Worker
-    scheduler = Scheduler(redis, postgres, config)
-    worker = Worker(redis, postgres, mongo, config)
-
-    # اجرای موازی (Scheduler + Workers)
-    await asyncio.gather(
-        scheduler.run(),
-        worker.run()
-    )
+    # اجرای همزمان Scheduler و Workers
+    await asyncio.gather(scheduler.run(), *workers)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.warning("Shutting down gracefully...")
-    except Exception as ex:
-        logger.error(ex)
-        time.sleep(70)
+    asyncio.run(main())
