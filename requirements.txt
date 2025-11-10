@@ -1,11 +1,6 @@
-tortoise
-# -------------------------------
-# Core Runtime & Async Stack
-# -------------------------------
 httpx==0.27.2
-redis>=7.0.1
-#asyncpg==0.29.0
-motor==3.6.0           # Async MongoDB client
+tortoise-orm==0.20.0
+asyncpg==0.29.0
 pydantic==2.12.0
 pydantic-settings==2.3.4
 loguru==0.7.2
@@ -13,26 +8,7 @@ aiofiles==24.1.0
 aioschedule==0.5.2
 beautifulsoup4==4.12.3
 lxml==5.3.0
-
-# -------------------------------
-# Monitoring & Metrics
-# -------------------------------
 prometheus-client==0.21.0
-
-# -------------------------------
-# Utility / System
-# -------------------------------
 python-dotenv==1.0.1
-uvloop==0.21.0 ; sys_platform != "win32"
-
-# -------------------------------
-# Other
-# -------------------------------
-booktype
-httpx
-selectolax
-pymongo
-loguru
-pyyaml
-pydantic
-pydantic_settings
+uvloop==0.21.0
+PyYAML==6.0.3
