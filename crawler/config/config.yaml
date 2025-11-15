@@ -1,0 +1,4 @@
+crawler:
+  max_depth: 3
+  max_pages: 5000
+  user_agent: "JooyaBot/1.0"
