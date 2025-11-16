@@ -1,13 +1,15 @@
-from tortoise import fields, models
-from datetime import datetime
+from tortoise import models, fields
+
 
 class CrawledPage(models.Model):
     id = fields.IntField(pk=True)
-    url = fields.CharField(max_length=2048, unique=True)
-    status_code = fields.IntField(null=True)
-    title = fields.CharField(max_length=512, null=True)
+    url = fields.TextField(unique=True)
+
+    status_code = fields.IntField()
+    title = fields.TextField(null=True)
     content = fields.TextField(null=True)
-    crawl_time = fields.DatetimeField(default=datetime.utcnow)
+
+    crawled_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:
         table = "crawled_pages"
