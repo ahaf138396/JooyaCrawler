@@ -23,7 +23,7 @@ async def main():
     # اتصال به MongoDB
     mongo_uri = os.getenv(
         "MONGO_URI",
-        "mongodb://jooya:SuperSecurePass123@mongo:27017/jooyacrawler",
+        "mongodb://jooya:SuperSecurePass123@mongo:27017/jooyacrawlerdb",
     )
     mongo = MongoStorageManager(mongo_uri)
     await mongo.connect()
