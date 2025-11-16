@@ -2,7 +2,7 @@ import asyncio
 import httpx
 from loguru import logger
 from crawler.storage.postgres_queue_manager import PostgresQueueManager
-
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 def extract_title(html: str) -> str:
@@ -20,7 +20,7 @@ class Worker:
         self.worker_id = worker_id
 
     async def process_url(self, url: str):
-        """اینجا بعداً محتوای صفحه رو دانلود و تحلیل می‌کنیم"""
+
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.get(url)
@@ -33,9 +33,16 @@ class Worker:
                     defaults={
                         "status_code": response.status_code,
                         "title": extract_title(content),
-                        "content": content[:5000],  # برای MVP فقط ۵۰۰۰ کاراکتر
+                        "content": content[:5000],
                     },
                 )
+
+                links = extract_links(url, content)
+                if links:
+                    for link in links[:1000]:
+                        await queue_manager.enqueue_url(link)
+                    logger.info(f"[Worker-{worker_id}] Found and queued {len(links)} new links from {url}")
+
 
 
         except Exception as e:
@@ -50,4 +57,24 @@ class Worker:
             if url:
                 await self.process_url(url)
             else:
-                await asyncio.sleep(3)  # اگر صف خالی بود
+                await asyncio.sleep(3)
+
+
+def extract_links(base_url: str, html: str) -> list[str]:
+    links = set()
+    base_domain = urlparse(base_url).netloc
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all("a", href=True):
+            href = tag["href"].strip()
+            full_url = urljoin(base_url, href)
+            parsed = urlparse(full_url)
+
+            # فقط لینک‌های http/https و داخل دامنه اصلی
+            if parsed.scheme in ("http", "https") and base_domain in parsed.netloc:
+                links.add(full_url)
+    except Exception as e:
+        logger.warning(f"Failed to extract links from {base_url}: {e}")
+
+    return list(links)

@@ -3,8 +3,11 @@ from crawler.storage.models.queue_model import CrawlQueue
 
 class PostgresQueueManager:
     async def enqueue_url(self, url: str):
-        await CrawlQueue.create(url=url)
-        logger.debug(f"URL enqueued: {url}")
+        exists = await CrawlQueue.filter(url=url, status="pending").exists()
+        if not exists:
+            await CrawlQueue.create(url=url, status="pending")
+            logger.debug(f"URL enqueued: {url}")
+
 
     async def dequeue_url(self):
         task = await CrawlQueue.filter(status="pending").order_by("added_at").first()
