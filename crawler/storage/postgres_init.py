@@ -14,7 +14,11 @@ async def init_postgres():
     logger.info("Initializing PostgreSQL and ORM models...")
     await Tortoise.init(
         db_url=DB_URL,
-        modules={"models": ["crawler.storage.models.queue_model"]},
+        modules={"models": [
+            "crawler.storage.models.queue_model",
+            "crawler.storage.models.page_model",
+        ]},
     )
+
     await Tortoise.generate_schemas(safe=True)
     logger.info("PostgreSQL tables created or verified.")
