@@ -7,21 +7,21 @@ from crawler.storage.models.queue_model import CrawlQueue
 
 class PostgresQueueManager:
     async def enqueue_url(self, url: str, priority: int = 0) -> None:
-        obj = await CrawlQueue.filter(url=url).first()
+        obj = await CrawlQueue.get_or_none(url=url)
 
         if obj is None:
             await CrawlQueue.create(url=url, priority=priority, status="pending")
             return
 
-        if obj.status in ("done", "error", "processing"):
-            obj.status = "pending"
-            obj.error_count = 0
-            await obj.save()
+        # اگر در وضعیت processing گیر کرده بود → آزاد کن
+        if obj.status in ("processing", "done", "error"):
+            await CrawlQueue.filter(id=obj.id).update(
+                status="pending",
+                error_count=0,
+                last_attempt_at=None
+            )
 
     async def dequeue_url(self) -> Optional[str]:
-        """
-        برداشتن قدیمی‌ترین URL pending با بالاترین priority.
-        """
         item = (
             await CrawlQueue.filter(status="pending")
             .order_by("-priority", "id")
