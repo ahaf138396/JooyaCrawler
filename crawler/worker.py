@@ -19,7 +19,7 @@ class Worker:
         self.session = None
         self.worker_id = worker_id
 
-    async def fetch(self, url: str) -> str | None:
+    async def fetch(self, url: str) -> tuple[int, str] | tuple[None, None]:
         """Fetch URL content with retries and metrics."""
         retries = 3
         timeout = aiohttp.ClientTimeout(total=10)
@@ -30,16 +30,17 @@ class Worker:
                     self.session = session
 
                     with REQUEST_LATENCY.labels(worker=self.worker_id).time():
-                        async with session.get(url, headers={
-                            "User-Agent": "JooyaCrawler/1.0"
-                        }) as resp:
+                        async with session.get(
+                            url,
+                            headers={"User-Agent": "JooyaCrawler/1.0"},
+                        ) as resp:
                             REQUEST_COUNT.labels(worker=self.worker_id).inc()
 
                             if resp.status != 200:
                                 FAILED_REQUESTS.labels(worker=self.worker_id).inc()
-                                return None
+                                return resp.status, None
 
-                            return await resp.text()
+                            return resp.status, await resp.text()
 
             except Exception as e:
                 logger.warning(
@@ -48,27 +49,30 @@ class Worker:
                 await asyncio.sleep(1)
 
         FAILED_REQUESTS.labels(worker=self.worker_id).inc()
-        return None
+        return None, None
 
     async def process_url(self, url: str):
         try:
             # Duplicate check
             existing = await self.mongo.find_page(url)
             if existing is not None:
+                await self.queue.mark_done(url)
                 return
 
-            html = await self.fetch(url)
+            status_code, html = await self.fetch(url)
             if not html:
+                await self.queue.mark_error(url)
                 return
 
             soup = BeautifulSoup(html, "html.parser")
             text = soup.get_text(separator=" ").strip()
-            links = [normalize_url(a.get("href"), url) for a in soup.find_all("a")]
+            links = [normalize_url(url, a.get("href")) for a in soup.find_all("a")]
             links = [l for l in links if l]
 
             # Mongo save
             await self.mongo.save_page(
                 url=url,
+                status_code=status_code,
                 html=html,
                 text=text[:10000],  # limit for safety
                 links=links,
@@ -88,12 +92,15 @@ class Worker:
 
             CRAWLED_PAGES.labels(worker=self.worker_id).inc()
 
+            await self.queue.mark_done(url)
+
             logger.info(f"[Worker-{self.worker_id}] Crawled: {url}")
 
         except Exception as e:
             logger.error(
                 f"[Worker-{self.worker_id}] Error processing {url}: {e}"
             )
+            await self.queue.mark_error(url)
 
     async def run(self):
         logger.info(f"Worker-{self.worker_id} started.")
