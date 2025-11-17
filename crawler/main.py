@@ -36,7 +36,7 @@ async def main() -> None:
 
     scheduler = Scheduler(queue, seed_urls, interval_seconds=10)
 
-    workers = [Worker(queue, mongo, i).run() for i in range(3)]
+    workers = [Worker(queue, mongo, i).run() for i in range(20)]
 
     await asyncio.gather(scheduler.run(), *workers)
 

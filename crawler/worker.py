@@ -31,8 +31,6 @@ class Worker:
         self.mongo = mongo
         self.worker_id = worker_id
 
-
-
     async def _respect_domain_policy(self, url: str) -> None:
         parsed = urlparse(url)
         domain = parsed.netloc
@@ -45,6 +43,7 @@ class Worker:
         now = datetime.now(timezone.utc)
 
         if policy.last_crawled_at:
+            # فاصله زمانی امن + سازگار با timezone-aware
             delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
             wait_ms = policy.min_delay_ms - delta_ms
             if wait_ms > 0:
@@ -62,14 +61,14 @@ class Worker:
                 response = await client.get(url)
                 html = response.text
 
-            # Mongo (کل HTML)
+            # ذخیره HTML کامل در Mongo
             await self.mongo.save_page(url, response.status_code, html)
 
-            # متن خالص + عنوان
+            # استخراج متن و عنوان
             text = extract_text(html)
             title = extract_title(html)
 
-            # ذخیره در CrawledPage
+            # ذخیره در Page
             page, created = await CrawledPage.get_or_create(
                 url=url,
                 defaults={
@@ -85,33 +84,41 @@ class Worker:
                 page.content = html[:5000]
                 await page.save()
 
-            # متادیتا
+            # هَش متن
             content_hash = (
                 hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-                if text
-                else None
+                if text else None
             )
 
-            await PageMetadata.get_or_create(
+            # ایجاد یا گرفتن متادیتا (بدون هیچ احتمال تولید collection)
+            meta, meta_created = await PageMetadata.get_or_create(
                 page=page,
                 defaults={
                     "html_length": len(html),
                     "text_length": len(text),
-                    "link_count": 0,  # بعد از شمارش لینک‌ها پر می‌کنیم
-                    "language": None,  # بعداً می‌تونیم language detection اضافه کنیم
+                    "link_count": 0,
+                    "language": None,
                     "content_hash": content_hash,
                     "keywords": None,
                 },
             )
 
+            if not meta_created:
+                # همیشه آپدیت ایمن
+                meta.html_length = len(html)
+                meta.text_length = len(text)
+                meta.content_hash = content_hash
+                await meta.save()
+
+            # لینک‌ها
             links = extract_links(url, html)
             link_count = len(links)
 
+            # آپدیت meta بعد از شمارش لینک
+            meta.link_count = link_count
+            await meta.save()
+
             if link_count > 0:
-                # همیشه PageMetadata معتبر
-                meta, _ = await PageMetadata.get_or_create(page=page)
-                meta.link_count = link_count
-                await meta.save()
 
                 base_domain = urlparse(url).netloc
 
