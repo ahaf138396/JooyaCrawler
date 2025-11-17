@@ -1,208 +1,106 @@
 import asyncio
-import hashlib
-from datetime import datetime, timezone
-from urllib.parse import urlparse
-from crawler.monitoring.metrics_server import (
-    CRAWLED_PAGES,
-    CRAWL_ERRORS,
-    CRAWL_LATENCY,
-    EXTRACTED_LINKS,
-    WORKER_ACTIVE,
-)
-import time
-
-import httpx
+import aiohttp
 from loguru import logger
+from bs4 import BeautifulSoup
 
-from crawler.parsing.html_extractor import (
-    extract_title,
-    extract_text,
-    extract_links,
+from crawler.monitoring.metrics_server import (
+    REQUEST_COUNT,
+    REQUEST_LATENCY,
+    CRAWLED_PAGES,
+    FAILED_REQUESTS,
 )
-from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
-from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
-
-from crawler.storage.models.page_model import CrawledPage
-from crawler.storage.models.page_metadata_model import PageMetadata
-from crawler.storage.models.outbound_link_model import OutboundLink
-from crawler.storage.models.crawl_error_log_model import CrawlErrorLog
-from crawler.storage.models.domain_crawl_policy_model import DomainCrawlPolicy
+from crawler.utils.url_normalizer import normalize_url
 
 
 class Worker:
-    def __init__(
-        self,
-        queue: PostgresQueueManager,
-        mongo: MongoStorageManager,
-        worker_id: int,
-    ):
+    def __init__(self, queue, mongo, worker_id):
         self.queue = queue
         self.mongo = mongo
+        self.session = None
         self.worker_id = worker_id
-        self.http_client = None  # type: ignore
 
-    # ---------------- Domain Policy / Rate Limit ----------------
-    async def _respect_domain_policy(self, url: str) -> None:
-        parsed = urlparse(url)
-        domain = parsed.netloc
+    async def fetch(self, url: str) -> str | None:
+        """Fetch URL content with retries and metrics."""
+        retries = 3
+        timeout = aiohttp.ClientTimeout(total=10)
 
-        policy, _ = await DomainCrawlPolicy.get_or_create(
-            domain=domain,
-            defaults={"min_delay_ms": 1000},
-        )
+        for attempt in range(1, retries + 1):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    self.session = session
 
-        now = datetime.now(timezone.utc)
+                    with REQUEST_LATENCY.labels(worker=self.worker_id).time():
+                        async with session.get(url, headers={
+                            "User-Agent": "JooyaCrawler/1.0"
+                        }) as resp:
+                            REQUEST_COUNT.labels(worker=self.worker_id).inc()
 
-        if policy.last_crawled_at:
-            # هر دو timezone-aware هستند → مشکل offset-naive حل شد
-            delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
-            wait_ms = policy.min_delay_ms - delta_ms
-            if wait_ms > 0:
-                await asyncio.sleep(wait_ms / 1000)
+                            if resp.status != 200:
+                                FAILED_REQUESTS.labels(worker=self.worker_id).inc()
+                                return None
 
-        policy.last_crawled_at = now
-        policy.crawled_today = (policy.crawled_today or 0) + 1
-        await policy.save()
+                            return await resp.text()
 
-    # ---------------- Core Processing ----------------
-    async def process_url(self, url: str) -> None:
+            except Exception as e:
+                logger.warning(
+                    f"[Worker-{self.worker_id}] Fetch failed ({attempt}/3) for {url}: {e}"
+                )
+                await asyncio.sleep(1)
+
+        FAILED_REQUESTS.labels(worker=self.worker_id).inc()
+        return None
+
+    async def process_url(self, url: str):
         try:
-            start_time = time.perf_counter()
+            # Duplicate check
+            existing = await self.mongo.find_page(url)
+            if existing is not None:
+                return
 
-            await self._respect_domain_policy(url)
+            html = await self.fetch(url)
+            if not html:
+                return
 
-            # استفاده از connection pool مشترک در self.http_client
-            assert self.http_client is not None, "HTTP client is not initialized"
+            soup = BeautifulSoup(html, "html.parser")
+            text = soup.get_text(separator=" ").strip()
+            links = [normalize_url(a.get("href"), url) for a in soup.find_all("a")]
+            links = [l for l in links if l]
 
-            response = await self.http_client.get(url)
-            html = response.text
-
-            # ذخیره نسخه کامل HTML در Mongo
-            await self.mongo.save_page(url, response.status_code, html)
-
-            # استخراج متن و عنوان
-            text = extract_text(html) or ""
-            title = extract_title(html)
-
-            # ذخیره/آپدیت رکورد صفحه
-            page, created = await CrawledPage.get_or_create(
+            # Mongo save
+            await self.mongo.save_page(
                 url=url,
-                defaults={
-                    "status_code": response.status_code,
-                    "title": title,
-                    "content": html[:5000],
-                },
+                html=html,
+                text=text[:10000],  # limit for safety
+                links=links,
             )
 
-            if not created:
-                page.status_code = response.status_code
-                page.title = title
-                page.content = html[:5000]
-                await page.save()
-
-            # ---------------- Metadata ----------------
-            content_hash = (
-                hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-                if text
-                else None
+            # Save metadata
+            await self.mongo.save_metadata(
+                url=url,
+                html_length=len(html),
+                text_length=len(text),
+                link_count=len(links),
             )
 
-            metadata = await PageMetadata.get_or_none(page=page)
-
-            if metadata is None:
-                metadata = await PageMetadata.create(
-                    page=page,
-                    html_length=len(html),
-                    text_length=len(text),
-                    link_count=0,
-                    language=None,
-                    content_hash=content_hash,
-                    keywords=None,
-                )
-            else:
-                metadata.html_length = len(html)
-                metadata.text_length = len(text)
-                metadata.content_hash = content_hash
-                await metadata.save()
-
-            # ---------------- Links ----------------
-            links = extract_links(url, html)
-            # حذف لینک‌های تکراری در سطح همین صفحه
-            unique_links = list(dict.fromkeys(links))
-            link_count = len(unique_links)
-
-            metadata.link_count = link_count
-            await metadata.save()
-
-            base_domain = urlparse(url).netloc
-
-            # به‌خاطر فشار روی DB و صف، تعداد لینک‌های هر صفحه را محدود می‌کنیم
-            for link in unique_links[:1000]:
-                parsed = urlparse(link)
-                is_internal = parsed.netloc == base_domain
-
-                await OutboundLink.create(
-                    source_page=page,
-                    target_url=link,
-                    is_internal=is_internal,
-                )
-
+            # Queue discovered links
+            for link in links:
                 await self.queue.enqueue_url(link)
 
-            logger.info(
-                f"[Worker-{self.worker_id}] Crawled: {url} "
-                f"(status={response.status_code}, html={len(html)} bytes, links={link_count})"
-            )
-            EXTRACTED_LINKS.observe(link_count)
+            CRAWLED_PAGES.labels(worker=self.worker_id).inc()
+
+            logger.info(f"[Worker-{self.worker_id}] Crawled: {url}")
 
         except Exception as e:
-            logger.error(f"[Worker-{self.worker_id}] Error processing {url}: {e}")
-
-            await CrawlErrorLog.create(
-                url=url,
-                status_code=None,
-                error_message=str(e),
-                worker_id=self.worker_id,
+            logger.error(
+                f"[Worker-{self.worker_id}] Error processing {url}: {e}"
             )
-            CRAWL_ERRORS.inc()
-            # URL در حالت error می‌رود (برای retry logic آینده می‌تونی روی error_count کار کنی)
-            await self.queue.mark_error(url)
 
-        else:
-            duration = time.perf_counter() - start_time
-            CRAWL_LATENCY.observe(duration)
-            CRAWLED_PAGES.inc()
-
-            await self.queue.mark_done(url)
-
-    # ---------------- Worker Loop ----------------
-    async def run(self) -> None:
+    async def run(self):
         logger.info(f"Worker-{self.worker_id} started.")
-        WORKER_ACTIVE.inc()
+        while True:
+            url = await self.queue.dequeue_url()
+            if not url:
+                await asyncio.sleep(0.1)
+                continue
 
-        timeout = httpx.Timeout(10.0, connect=5.0)
-        limits = httpx.Limits(
-            max_keepalive_connections=100,
-            max_connections=100,
-        )
-
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            limits=limits,
-            http2=True,
-            headers={
-                "User-Agent": (
-                    "JooyaCrawler/0.1 (+https://jooya.example)"
-                )
-            },
-        ) as client:
-            self.http_client = client
-
-            while True:
-                url = await self.queue.dequeue_url()
-                if url:
-                    logger.debug(f"[Worker-{self.worker_id}] Dequeued: {url}")
-                    await self.process_url(url)
-                else:
-                    # اگر صف خالی بود، کمی استراحت
-                    await asyncio.sleep(2)
+            await self.process_url(url)
