@@ -29,8 +29,9 @@ class PostgresQueueManager:
 
     async def enqueue_url(self, url: str, priority: int = 0) -> None:
         try:
+            url1 = normalize_url(url)
             obj, created = await CrawlQueue.get_or_create(
-                url = normalize_url(url),
+                url = url1,
                 defaults={"priority": priority, "status": "pending"},
             )
 
@@ -53,7 +54,7 @@ class PostgresQueueManager:
                     obj.scheduled_at = dt.datetime.now(dt.timezone.utc)
                     await obj.save()
 
-            logger.debug("Enqueued URL: %s (priority=%s)", obj.url, obj.priority)
+            logger.debug("Enqueued URL: %s (priority=%s)", url1, priority)
         except Exception as e:
             logger.error("Error enqueuing URL %s: %s", url, e)
 
