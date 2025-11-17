@@ -1,102 +1,172 @@
-import asyncio
 import datetime as dt
 from typing import Optional
-from tortoise import Tortoise
-from loguru import logger
+import logging
+from urllib.parse import urldefrag
+
 from crawler.storage.models.queue_model import CrawlQueue
 
-from urllib.parse import urlsplit, urlunsplit, urldefrag
+logger = logging.getLogger(__name__)
 
-def normalize_url(url: str) -> str:
-    # fragment مثل #bodyContent حذف می‌شود
-    defragged, _ = urldefrag(url)
+# وضعیت‌ها به صورت رشته
+STATUS_PENDING = "pending"
+STATUS_PROCESSING = "processing"
+STATUS_DONE = "done"
+STATUS_ERROR = "error"
 
-    parts = urlsplit(defragged)
-    scheme = parts.scheme.lower()
-    netloc = parts.netloc.lower()
-    path = parts.path or "/"
 
-    # / آخر را برای مسیرهای غیر روت حذف کن (اختیاری ولی خوبه)
-    if path != "/" and path.endswith("/"):
-        path = path.rstrip("/")
+def _normalize_url(raw: str) -> Optional[str]:
+    """
+    نرمال‌سازی و فیلتر اولیه‌ی URL قبل از ورود به صف.
+    - حذف فاصله‌ها
+    - حذف fragment (#...)
+    - حذف اسکیم‌های غیر http/https مثل mailto:, javascript:, tel:, data: و ...
+    """
+    if not raw:
+        return None
 
-    return urlunsplit((scheme, netloc, path, parts.query, ""))
+    raw = raw.strip()
+    if not raw:
+        return None
 
-_dequeue_lock = asyncio.Lock()
+    lower = raw.lower()
+
+    # لینک‌هایی که اصلاً نمی‌خوایم کراول کنیم
+    if lower.startswith(
+        (
+            "mailto:",
+            "javascript:",
+            "tel:",
+            "data:",
+            "ws:",
+            "wss:",
+            "irc:",
+            "ftp:",
+            "file:",
+            "about:",
+            "chrome:",
+            "edge:",
+        )
+    ):
+        return None
+
+    # لینک‌های بدون پروتکل ولی با //example.com
+    if lower.startswith("//"):
+        raw = "https:" + raw
+        lower = raw.lower()
+
+    # فعلاً فقط http/https
+    if not (lower.startswith("http://") or lower.startswith("https://")):
+        return None
+
+    # حذف fragment
+    url, _frag = urldefrag(raw)
+    return url
 
 
 class PostgresQueueManager:
-
     async def enqueue_url(self, url: str, priority: int = 0) -> None:
-        try:
-            url1 = normalize_url(url)
-            obj, created = await CrawlQueue.get_or_create(
-                url = url1,
-                defaults={"priority": priority, "status": "pending"},
-            )
+        """
+        اضافه کردن URL به صف.
+        - URL قبل از ذخیره نرمالایز و فیلتر می‌شود.
+        - اگر URL قبلاً موجود باشد، فقط در صورت بالاتر بودن priority به‌روزرسانی می‌شود.
+        """
+        url = _normalize_url(url)
+        if not url:
+            return
 
-            if not created:
-                # اگر همین الان تو صفه یا در حال پردازش، کاری نکن
-                if obj.status in ("pending", "processing"):
-                    return
+        obj, created = await CrawlQueue.get_or_create(
+            url=url,
+            defaults={
+                "priority": priority,
+                "status": STATUS_PENDING,
+            },
+        )
 
-                # فعلاً صفحات done رو دوباره وارد صف نکن
-                if obj.status == "done":
-                    return
+        # اگر قبلاً در صف بوده و priority جدید بالاتر است، به‌روزرسانی‌اش کن
+        if not created:
+            try:
+                current_priority = obj.priority or 0
+            except AttributeError:
+                current_priority = 0
 
-                # برای error (با محدودیت تعداد تلاش) اجازه‌ی retry داشته باشیم
-                if obj.status == "error":
-                    if obj.error_count is not None and obj.error_count >= 3:
-                        # از حد تلاش گذشتیم، دیگه رهاش کن
-                        return
-                    obj.status = "pending"
-                    obj.priority = priority
-                    obj.scheduled_at = dt.datetime.now(dt.timezone.utc)
-                    await obj.save()
+            if priority > current_priority:
+                obj.priority = priority
+                await obj.save()
 
-            logger.debug("Enqueued URL: %s (priority=%s)", url1, priority)
-        except Exception as e:
-            logger.error("Error enqueuing URL %s: %s", url, e)
+        logger.debug(
+            "Enqueued URL: %s (priority=%s, created=%s)",
+            url,
+            priority,
+            created,
+        )
 
     async def dequeue_url(self) -> Optional[str]:
-        conn = Tortoise.get_connection("default")
-        sql = """
-        WITH cte AS (
-            SELECT id
-            FROM crawl_queue
-            WHERE status = 'pending'
-            ORDER BY priority DESC, scheduled_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-        )
-        UPDATE crawl_queue AS cq
-        SET status = 'processing',
-            last_attempt_at = NOW()
-        FROM cte
-        WHERE cq.id = cte.id
-        RETURNING cq.url;
         """
-        rows = await conn.execute_query_dict(sql)
-        if not rows:
+        گرفتن یک URL از صف با بالاترین priority.
+        """
+        # اگر فیلدی مثل scheduled_at نداری، این order_by روی priority و id امنه
+        row = (
+            await CrawlQueue.filter(status=STATUS_PENDING)
+            .order_by("-priority", "id")
+            .first()
+        )
+
+        if not row:
             return None
 
-        url = rows[0]["url"]
-        logger.debug("Dequeued: %s", url)
-        return url
+        row.status = STATUS_PROCESSING
+        row.last_attempt_at = dt.datetime.now(dt.timezone.utc)
+        await row.save()
+
+        logger.debug("Dequeued: %s", row.url)
+        return row.url
 
     async def mark_done(self, url: str) -> None:
-        url = normalize_url(url)
-        await CrawlQueue.filter(url=url).update(status="done")
+        """
+        علامت زدن URL به عنوان done.
+        """
+        updated = await CrawlQueue.filter(url=url).update(
+            status=STATUS_DONE,
+            error_count=0,
+        )
+        logger.debug("Mark done for %s (updated_rows=%s)", url, updated)
 
-    async def mark_error(self, url: str) -> None:
-        url = normalize_url(url)
-        await CrawlQueue.filter(url=url).update(
-            status="error",
-            error_count=1 + (await CrawlQueue.get(url=url)).error_count,
+    async def mark_error(self, url: str, max_retries: int = 3) -> None:
+        """
+        افزایش error_count و در صورت لزوم تغییر status به error.
+        """
+        row = await CrawlQueue.get_or_none(url=url)
+        if not row:
+            logger.warning("Tried to mark_error for unknown URL: %s", url)
+            return
+
+        # اگر null بود، صفر فرض کن
+        row.error_count = (row.error_count or 0) + 1
+
+        if row.error_count >= max_retries:
+            row.status = STATUS_ERROR
+        else:
+            # اجازه بده بعداً دوباره امتحان بشه
+            row.status = STATUS_PENDING
+
+        row.last_attempt_at = dt.datetime.now(dt.timezone.utc)
+        await row.save()
+
+        logger.debug(
+            "Mark error for %s (error_count=%s, status=%s)",
+            url,
+            row.error_count,
+            row.status,
         )
 
     async def has_pending(self) -> bool:
-        return await CrawlQueue.filter(status="pending").exists()
+        """
+        آیا آیتم pending داریم؟
+        """
+        return await CrawlQueue.filter(status=STATUS_PENDING).exists()
 
     async def count_pending(self) -> int:
-        return await CrawlQueue.filter(status="pending").count()
+        """
+        تعداد URLهای pending.
+        """
+        return await CrawlQueue.filter(status=STATUS_PENDING).count()

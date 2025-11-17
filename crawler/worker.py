@@ -112,7 +112,13 @@ class Worker:
     async def process_url(self, url: str) -> None:
         worker_label = str(self.worker_id)
 
+        if "fa.wikipedia.org" in url:
+            parsed = urlparse(url)
+            if not parsed.path.startswith("/wiki/"):
+                return
+
         try:
+
             await self._respect_domain_policy(url)
 
             response = await self._fetch(url)
