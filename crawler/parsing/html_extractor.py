@@ -1,63 +1,60 @@
-from __future__ import annotations
-
-from typing import List
-from urllib.parse import urljoin, urlparse
-
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 
-def extract_title(html: str) -> str | None:
+def extract_title(html: str) -> str:
+    """
+    Extract <title> safely.
+    Always returns a string.
+    """
     try:
         soup = BeautifulSoup(html, "lxml")
         if soup.title and soup.title.string:
             return soup.title.string.strip()
-    except Exception:
-        pass
-    return None
-
-
-def extract_text(html: str) -> str:
-    """
-    خروجی: متن خالص (برای ایندکس / hash / تحلیل NLP).
-    """
-    try:
-        soup = BeautifulSoup(html, "lxml")
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-        text = soup.get_text(separator=" ", strip=True)
-        return " ".join(text.split())
+        return ""
     except Exception:
         return ""
 
 
-def extract_links(base_url: str, html: str) -> List[str]:
+def extract_text(html: str) -> str:
     """
-    همه لینک‌های داخلی (همان دامنه) را برمی‌گرداند.
+    Extract visible text.
+    Always returns a string (never None).
     """
-    links = set()
+    try:
+        soup = BeautifulSoup(html, "lxml")
+
+        # Remove scripts/styles for cleaner text
+        for tag in soup(["script", "style", "noscript"]):
+            tag.extract()
+
+        text = soup.get_text(separator=" ", strip=True)
+        return text if isinstance(text, str) else ""
+    except Exception:
+        return ""
+
+
+def extract_links(base_url: str, html: str) -> list[str]:
+    """
+    Extract all <a href>, normalized, cleaned.
+    Always returns a list[str].
+    """
+    links = []
 
     try:
         soup = BeautifulSoup(html, "lxml")
-        base_domain = urlparse(base_url).netloc
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
 
-        for tag in soup.find_all("a", href=True):
-            href = tag["href"].strip()
-            if not href:
+            # skip javascript links
+            if href.startswith("javascript:"):
                 continue
 
-            full_url = urljoin(base_url, href)
-            parsed = urlparse(full_url)
+            # absolute-ize
+            abs_url = urljoin(base_url, href)
 
-            if parsed.scheme not in ("http", "https"):
-                continue
+            links.append(abs_url)
 
-            # فقط لینک‌های داخلی
-            if parsed.netloc and parsed.netloc != base_domain:
-                continue
-
-            links.add(full_url)
-
+        return links
     except Exception:
-        pass
-
-    return list(links)
+        return []
