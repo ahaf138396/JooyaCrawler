@@ -13,3 +13,6 @@ python-dotenv
 PyYAML
 uvloop
 motor
+httpx[http2]
+prometheus_client
+aiohttp

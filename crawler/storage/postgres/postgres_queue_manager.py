@@ -54,3 +54,6 @@ class PostgresQueueManager:
 
     async def has_pending(self) -> bool:
         return await CrawlQueue.filter(status="pending").exists()
+
+    async def count_pending(self) -> int:
+        return await CrawlQueue.filter(status="pending").count()

@@ -2,6 +2,14 @@ import asyncio
 import hashlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from crawler.monitoring.metrics_server import (
+    CRAWLED_PAGES,
+    CRAWL_ERRORS,
+    CRAWL_LATENCY,
+    EXTRACTED_LINKS,
+    WORKER_ACTIVE,
+)
+import time
 
 import httpx
 from loguru import logger
@@ -59,6 +67,8 @@ class Worker:
     # ---------------- Core Processing ----------------
     async def process_url(self, url: str) -> None:
         try:
+            start_time = time.perf_counter()
+
             await self._respect_domain_policy(url)
 
             # استفاده از connection pool مشترک در self.http_client
@@ -143,6 +153,7 @@ class Worker:
                 f"[Worker-{self.worker_id}] Crawled: {url} "
                 f"(status={response.status_code}, html={len(html)} bytes, links={link_count})"
             )
+            EXTRACTED_LINKS.observe(link_count)
 
         except Exception as e:
             logger.error(f"[Worker-{self.worker_id}] Error processing {url}: {e}")
@@ -153,19 +164,22 @@ class Worker:
                 error_message=str(e),
                 worker_id=self.worker_id,
             )
-
+            CRAWL_ERRORS.inc()
             # URL در حالت error می‌رود (برای retry logic آینده می‌تونی روی error_count کار کنی)
             await self.queue.mark_error(url)
 
         else:
-            # اگر همه چیز OK بود، URL done می‌شود
+            duration = time.perf_counter() - start_time
+            CRAWL_LATENCY.observe(duration)
+            CRAWLED_PAGES.inc()
+
             await self.queue.mark_done(url)
 
     # ---------------- Worker Loop ----------------
     async def run(self) -> None:
         logger.info(f"Worker-{self.worker_id} started.")
+        WORKER_ACTIVE.inc()
 
-        # یک AsyncClient مشترک برای کل عمر این Worker
         timeout = httpx.Timeout(10.0, connect=5.0)
         limits = httpx.Limits(
             max_keepalive_connections=100,
