@@ -101,19 +101,17 @@ class Worker:
                 },
             )
 
-            # لینک‌ها
             links = extract_links(url, html)
             link_count = len(links)
 
-            if link_count:
-                # آپدیت link_count
-                meta = await PageMetadata.get(page=page)
+            if link_count > 0:
+                # همیشه PageMetadata معتبر
+                meta, _ = await PageMetadata.get_or_create(page=page)
                 meta.link_count = link_count
                 await meta.save()
 
                 base_domain = urlparse(url).netloc
 
-                # ذخیره OutboundLink + اضافه به صف
                 for link in links[:1000]:
                     parsed = urlparse(link)
                     is_internal = parsed.netloc == base_domain
