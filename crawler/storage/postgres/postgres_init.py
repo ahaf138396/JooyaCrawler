@@ -13,7 +13,8 @@ async def init_postgres() -> None:
     port = os.getenv("POSTGRES_PORT", "5432")
     db = os.getenv("POSTGRES_DB", "jooyacrawlerdb")
 
-    db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    db_url = f"postgres+asyncpg://{user}:{password}@{host}:{port}/{db}"
+
 
 
     logger.info("Initializing PostgreSQL and ORM models...")
