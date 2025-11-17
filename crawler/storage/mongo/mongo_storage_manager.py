@@ -1,28 +1,38 @@
 from datetime import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
+
 from loguru import logger
+from motor.motor_asyncio import AsyncIOMotorClient
+
 
 class MongoStorageManager:
-    def __init__(self, mongo_url: str, db_name: str = "jooyacrawler"):
-        self.mongo_url = mongo_url
+    def __init__(
+        self,
+        uri: str,
+        db_name: str = "jooyacrawler",
+        collection_name: str = "pages",
+    ):
+        self.uri = uri
         self.db_name = db_name
-        self.client = None
-        self.db = None
+        self.collection_name = collection_name
+        self.client: AsyncIOMotorClient | None = None
+        self.collection = None
 
-    async def connect(self):
-        """Connect to MongoDB"""
-        self.client = AsyncIOMotorClient(self.mongo_url)
-        self.db = self.client[self.db_name]
-        logger.info(f"Connected to MongoDB: {self.mongo_url}")
+    async def connect(self) -> None:
+        self.client = AsyncIOMotorClient(self.uri)
+        db = self.client[self.db_name]
+        self.collection = db[self.collection_name]
+        logger.info(f"Connected to MongoDB: {self.uri}")
 
-    async def save_page(self, url: str, status_code: int, html: str):
-        """Save crawled page content"""
+    async def save_page(self, url: str, status_code: int, html: str) -> None:
+        if not self.collection:
+            raise RuntimeError("MongoStorageManager is not connected")
+
         doc = {
             "url": url,
             "status_code": status_code,
-            "content_length": len(html),
             "html": html,
-            "timestamp": datetime.utcnow(),
+            "length": len(html),
+            "fetched_at": datetime.utcnow(),
         }
-        await self.db.pages.insert_one(doc)
-        logger.debug(f"Saved page: {url} ({len(html)} bytes)")
+
+        await self.collection.update_one({"url": url}, {"$set": doc}, upsert=True)

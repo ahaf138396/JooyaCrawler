@@ -3,18 +3,17 @@ from loguru import logger
 from tortoise import Tortoise
 
 
-async def init_postgres():
+async def init_postgres() -> None:
     """
-    اتصال Tortoise ORM به Postgres و ساخت/بررسی جداول.
+    اتصال به PostgreSQL و ساخت/بررسی جداول.
     """
+    user = os.getenv("POSTGRES_USER", "jooya")
+    password = os.getenv("POSTGRES_PASSWORD", "SuperSecurePass123")
+    host = os.getenv("POSTGRES_HOST", "postgres")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "jooyacrawlerdb")
 
-    db_user = os.getenv("POSTGRES_USER", "jooya")
-    db_pass = os.getenv("POSTGRES_PASSWORD", "SuperSecurePass123")
-    db_name = os.getenv("POSTGRES_DB", "jooyacrawlerdb")
-    db_host = os.getenv("POSTGRES_HOST", "postgres")
-    db_port = os.getenv("POSTGRES_PORT", "5432")
-
-    db_url = f"postgres://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+    db_url = f"postgres://{user}:{password}@{host}:{port}/{db}"
 
     logger.info("Initializing PostgreSQL and ORM models...")
 
@@ -24,10 +23,13 @@ async def init_postgres():
             "models": [
                 "crawler.storage.models.queue_model",
                 "crawler.storage.models.page_model",
+                "crawler.storage.models.outbound_link_model",
+                "crawler.storage.models.page_metadata_model",
+                "crawler.storage.models.crawl_error_log_model",
+                "crawler.storage.models.domain_crawl_policy_model",
             ]
         },
     )
 
-    # ساخت جداول اگر وجود نداشته باشند
     await Tortoise.generate_schemas(safe=True)
     logger.info("PostgreSQL tables created or verified.")

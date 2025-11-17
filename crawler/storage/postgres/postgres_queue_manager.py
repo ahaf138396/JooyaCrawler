@@ -1,50 +1,56 @@
-from tortoise.transactions import in_transaction
+import datetime as dt
+from typing import Optional
+
 from loguru import logger
 from crawler.storage.models.queue_model import CrawlQueue
 
 
 class PostgresQueueManager:
-    async def enqueue_url(self, url: str):
+    async def enqueue_url(self, url: str, priority: int = 0) -> None:
         """
-        اضافه کردن URL به صف (اگر قبلاً نباشد).
+        اضافه کردن URL به صف (اگر وجود داشته باشد، دوباره pending اش می‌کنیم).
         """
-        try:
-            await CrawlQueue.get_or_create(url=url)
-            logger.debug(f"URL enqueued: {url}")
-        except Exception:
-            # اگر unique violation بود، کاری نکن
-            pass
+        obj, created = await CrawlQueue.get_or_create(
+            url=url,
+            defaults={"priority": priority, "status": "pending"},
+        )
 
-    async def dequeue_url(self) -> str | None:
+        if not created and obj.status in ("done", "error"):
+            obj.status = "pending"
+            obj.priority = priority
+            obj.error_count = 0
+            await obj.save()
+
+        logger.debug(f"URL enqueued: {url}")
+
+    async def dequeue_url(self) -> Optional[str]:
         """
-        یک URL pending با قفل SKIP LOCKED برمی‌دارد و status را processing می‌کند.
+        برداشتن قدیمی‌ترین URL pending با بالاترین priority.
         """
-        async with in_transaction() as conn:
-            rows = await conn.execute_query_dict(
-                """
-                SELECT * FROM crawl_queue
-                WHERE status = 'pending'
-                ORDER BY id
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-                """
-            )
+        item = (
+            await CrawlQueue.filter(status="pending")
+            .order_by("-priority", "id")
+            .first()
+        )
 
-            if not rows:
-                return None
+        if not item:
+            return None
 
-            url = rows[0]["url"]
+        item.status = "processing"
+        item.last_attempt_at = dt.datetime.utcnow()
+        await item.save()
 
-            await conn.execute_query(
-                "UPDATE crawl_queue SET status='processing' WHERE url = $1",
-                [url],
-            )
+        logger.debug(f"Dequeued: {item.url}")
+        return item.url
 
-            return url
-
-    async def mark_done(self, url: str):
-        """
-        بعد از پردازش موفق URL، آن را done می‌کند.
-        """
+    async def mark_done(self, url: str) -> None:
         await CrawlQueue.filter(url=url).update(status="done")
-        logger.debug(f"Marked done: {url}")
+
+    async def mark_error(self, url: str) -> None:
+        await CrawlQueue.filter(url=url).update(
+            status="error",
+            error_count=1 + (await CrawlQueue.get(url=url)).error_count,
+        )
+
+    async def has_pending(self) -> bool:
+        return await CrawlQueue.filter(status="pending").exists()
