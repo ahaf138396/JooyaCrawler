@@ -260,7 +260,7 @@ class Worker:
         WORKER_ACTIVE.labels(worker_id=worker_label).set(1.0)
 
         logger.info(f"{self.name} started.")
-        timeout = httpx.Timeout(20.0, connect=5.0)
+        timeout = httpx.Timeout(connect=5, total=20)
 
         try:
             async with httpx.AsyncClient(
