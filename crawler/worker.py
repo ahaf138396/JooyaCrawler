@@ -6,7 +6,11 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from crawler.parsing.html_extractor import extract_title, extract_text, extract_links
+from crawler.parsing.html_extractor import (
+    extract_title,
+    extract_text,
+    extract_links,
+)
 from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
 
@@ -18,12 +22,18 @@ from crawler.storage.models.domain_crawl_policy_model import DomainCrawlPolicy
 
 
 class Worker:
-    def __init__(self, queue: PostgresQueueManager, mongo: MongoStorageManager, worker_id: int):
+    def __init__(
+        self,
+        queue: PostgresQueueManager,
+        mongo: MongoStorageManager,
+        worker_id: int,
+    ):
         self.queue = queue
         self.mongo = mongo
         self.worker_id = worker_id
+        self.http_client = None  # type: ignore
 
-    # ---- Respect domain rate limit ----
+    # ---------------- Domain Policy / Rate Limit ----------------
     async def _respect_domain_policy(self, url: str) -> None:
         parsed = urlparse(url)
         domain = parsed.netloc
@@ -36,35 +46,35 @@ class Worker:
         now = datetime.now(timezone.utc)
 
         if policy.last_crawled_at:
-            # Both are now timezone-aware → safe subtraction
+            # هر دو timezone-aware هستند → مشکل offset-naive حل شد
             delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
             wait_ms = policy.min_delay_ms - delta_ms
-
             if wait_ms > 0:
                 await asyncio.sleep(wait_ms / 1000)
 
-        # Update policy state
         policy.last_crawled_at = now
         policy.crawled_today = (policy.crawled_today or 0) + 1
         await policy.save()
 
-    # ---- Process a single URL ----
+    # ---------------- Core Processing ----------------
     async def process_url(self, url: str) -> None:
         try:
             await self._respect_domain_policy(url)
 
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(url)
-                html = response.text
+            # استفاده از connection pool مشترک در self.http_client
+            assert self.http_client is not None, "HTTP client is not initialized"
 
-            # Save raw HTML in MongoDB
+            response = await self.http_client.get(url)
+            html = response.text
+
+            # ذخیره نسخه کامل HTML در Mongo
             await self.mongo.save_page(url, response.status_code, html)
 
-            # Extract text + title
+            # استخراج متن و عنوان
             text = extract_text(html) or ""
             title = extract_title(html)
 
-            # Store/update CrawledPage (main page table)
+            # ذخیره/آپدیت رکورد صفحه
             page, created = await CrawledPage.get_or_create(
                 url=url,
                 defaults={
@@ -80,8 +90,12 @@ class Worker:
                 page.content = html[:5000]
                 await page.save()
 
-            # ---- PAGE METADATA (fixed version) ----
-            content_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else None
+            # ---------------- Metadata ----------------
+            content_hash = (
+                hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+                if text
+                else None
+            )
 
             metadata = await PageMetadata.get_or_none(page=page)
 
@@ -93,7 +107,7 @@ class Worker:
                     link_count=0,
                     language=None,
                     content_hash=content_hash,
-                    keywords=None
+                    keywords=None,
                 )
             else:
                 metadata.html_length = len(html)
@@ -101,18 +115,19 @@ class Worker:
                 metadata.content_hash = content_hash
                 await metadata.save()
 
-            # ---- Extract links ----
+            # ---------------- Links ----------------
             links = extract_links(url, html)
-            link_count = len(links)
+            # حذف لینک‌های تکراری در سطح همین صفحه
+            unique_links = list(dict.fromkeys(links))
+            link_count = len(unique_links)
 
-            # update metadata.link_count
             metadata.link_count = link_count
             await metadata.save()
 
-            # ---- Save links + enqueue ----
             base_domain = urlparse(url).netloc
 
-            for link in links[:1000]:
+            # به‌خاطر فشار روی DB و صف، تعداد لینک‌های هر صفحه را محدود می‌کنیم
+            for link in unique_links[:1000]:
                 parsed = urlparse(link)
                 is_internal = parsed.netloc == base_domain
 
@@ -125,7 +140,8 @@ class Worker:
                 await self.queue.enqueue_url(link)
 
             logger.info(
-                f"[Worker-{self.worker_id}] Crawled: {url} ({len(html)} bytes, links={link_count}, status={response.status_code})"
+                f"[Worker-{self.worker_id}] Crawled: {url} "
+                f"(status={response.status_code}, html={len(html)} bytes, links={link_count})"
             )
 
         except Exception as e:
@@ -138,17 +154,41 @@ class Worker:
                 worker_id=self.worker_id,
             )
 
+            # URL در حالت error می‌رود (برای retry logic آینده می‌تونی روی error_count کار کنی)
             await self.queue.mark_error(url)
 
         else:
+            # اگر همه چیز OK بود، URL done می‌شود
             await self.queue.mark_done(url)
 
-    # ---- Worker Loop ----
+    # ---------------- Worker Loop ----------------
     async def run(self) -> None:
         logger.info(f"Worker-{self.worker_id} started.")
-        while True:
-            url = await self.queue.dequeue_url()
-            if url:
-                await self.process_url(url)
-            else:
-                await asyncio.sleep(2)
+
+        # یک AsyncClient مشترک برای کل عمر این Worker
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        limits = httpx.Limits(
+            max_keepalive_connections=100,
+            max_connections=100,
+        )
+
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            http2=True,
+            headers={
+                "User-Agent": (
+                    "JooyaCrawler/0.1 (+https://jooya.example)"
+                )
+            },
+        ) as client:
+            self.http_client = client
+
+            while True:
+                url = await self.queue.dequeue_url()
+                if url:
+                    logger.debug(f"[Worker-{self.worker_id}] Dequeued: {url}")
+                    await self.process_url(url)
+                else:
+                    # اگر صف خالی بود، کمی استراحت
+                    await asyncio.sleep(2)
