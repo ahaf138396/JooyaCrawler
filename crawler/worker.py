@@ -1,7 +1,9 @@
 import asyncio
 import httpx
 from loguru import logger
+import traceback
 
+from crawler.storage.models import CrawlErrorLog
 from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
 from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from crawler.monitoring.metrics_server import (
@@ -69,12 +71,34 @@ class Worker:
             WORKER_PROCESSED.labels(worker_id=self.worker_id).inc()
             logger.info(f"[Worker-{self.worker_id}] DONE: {url}")
 
-        except Exception as e:
-            WORKER_FAILED.labels(worker_id=self.worker_id).inc()
 
+
+        except Exception as e:
+            tb = traceback.format_exc()
+
+            logger.error(
+                f"[Worker-{self.worker_id}] ERROR processing {url}\n"
+                f"Exception: {e}\n"
+                f"Traceback:\n{tb}"
+            )
+
+            await CrawlErrorLog.create(
+                url=url,
+                status_code=None,
+                error_message=f"{e}\n{tb}",
+                worker_id=self.worker_id,
+            )
+
+            await self.queue.mark_error(url)
+
+            '''
+                    except Exception as e:
+            WORKER_FAILED.labels(worker_id=self.worker_id).inc()
+            
             await self.queue.mark_error(url, str(e), self.worker_id)
 
             logger.error(f"[Worker-{self.worker_id}] Error processing {url}: {e}")
+            '''
 
     async def run(self):
         logger.info(f"Worker-{self.worker_id} started.")
