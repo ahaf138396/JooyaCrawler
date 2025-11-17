@@ -49,8 +49,9 @@ async def main() -> None:
     # ---- MongoDB ----
     mongo_uri = os.getenv(
         "MONGO_URI",
-        "mongodb://jooya:SuperSecurePass123@mongo:27017/jooyacrawlerdb",
+        "mongodb://jooya:SuperSecurePass123@mongo:27017/jooyacrawlerdb?authSource=admin",
     )
+
     mongo = MongoStorageManager(mongo_uri)
     await mongo.connect()
 
