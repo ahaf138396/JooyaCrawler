@@ -260,12 +260,13 @@ class Worker:
         WORKER_ACTIVE.labels(worker_id=worker_label).set(1.0)
 
         logger.info(f"{self.name} started.")
-        timeout = httpx.Timeout(connect=5, total=20)
+
+        timeout = httpx.Timeout(timeout=20.0, connect=5.0)
 
         try:
             async with httpx.AsyncClient(
-                timeout=timeout,
-                follow_redirects=True,
+                    timeout=timeout,
+                    follow_redirects=True,
             ) as client:
                 self.client = client
 
@@ -280,3 +281,4 @@ class Worker:
         finally:
             self.client = None
             WORKER_ACTIVE.labels(worker_id=worker_label).set(0.0)
+
