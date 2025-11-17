@@ -13,6 +13,7 @@ class PageMetadata(models.Model):
         on_delete=fields.CASCADE,
     )
 
+
     html_length = fields.IntField(null=True)
     text_length = fields.IntField(null=True)
     link_count = fields.IntField(null=True)

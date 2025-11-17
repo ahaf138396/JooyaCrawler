@@ -6,39 +6,28 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from crawler.parsing.html_extractor import (
-    extract_title,
-    extract_text,
-    extract_links,
-)
+from crawler.parsing.html_extractor import extract_title, extract_text, extract_links
 from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
+
 from crawler.storage.models.page_model import CrawledPage
-from crawler.storage.models.outbound_link_model import OutboundLink
 from crawler.storage.models.page_metadata_model import PageMetadata
+from crawler.storage.models.outbound_link_model import OutboundLink
 from crawler.storage.models.crawl_error_log_model import CrawlErrorLog
 from crawler.storage.models.domain_crawl_policy_model import DomainCrawlPolicy
 
 
 class Worker:
-    def __init__(
-        self,
-        queue: PostgresQueueManager,
-        mongo: MongoStorageManager,
-        worker_id: int,
-    ):
+    def __init__(self, queue: PostgresQueueManager, mongo: MongoStorageManager, worker_id: int):
         self.queue = queue
         self.mongo = mongo
         self.worker_id = worker_id
 
+    # ---- Respect domain rate limit ----
     async def _respect_domain_policy(self, url: str) -> None:
-        """
-        نرخ خزش برای هر دامنه را کنترل می‌کند (politeness).
-        """
         parsed = urlparse(url)
         domain = parsed.netloc
 
-        # اینجا get_or_create مشکلی ندارد و ساده است
         policy, _ = await DomainCrawlPolicy.get_or_create(
             domain=domain,
             defaults={"min_delay_ms": 1000},
@@ -47,15 +36,19 @@ class Worker:
         now = datetime.now(timezone.utc)
 
         if policy.last_crawled_at:
+            # Both are now timezone-aware → safe subtraction
             delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
             wait_ms = policy.min_delay_ms - delta_ms
+
             if wait_ms > 0:
                 await asyncio.sleep(wait_ms / 1000)
 
+        # Update policy state
         policy.last_crawled_at = now
         policy.crawled_today = (policy.crawled_today or 0) + 1
         await policy.save()
 
+    # ---- Process a single URL ----
     async def process_url(self, url: str) -> None:
         try:
             await self._respect_domain_policy(url)
@@ -64,14 +57,14 @@ class Worker:
                 response = await client.get(url)
                 html = response.text
 
-            # 1) ذخیره HTML کامل در MongoDB
+            # Save raw HTML in MongoDB
             await self.mongo.save_page(url, response.status_code, html)
 
-            # 2) استخراج عنوان و متن
-            text = extract_text(html)
+            # Extract text + title
+            text = extract_text(html) or ""
             title = extract_title(html)
 
-            # 3) ذخیره/آپدیت رکورد صفحه در CrawledPage
+            # Store/update CrawledPage (main page table)
             page, created = await CrawledPage.get_or_create(
                 url=url,
                 defaults={
@@ -87,74 +80,70 @@ class Worker:
                 page.content = html[:5000]
                 await page.save()
 
-            # 4) متادیتا: اگر وجود دارد، آپدیت؛ اگر نه، بساز
-            content_hash = (
-                hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-                if text
-                else None
-            )
+            # ---- PAGE METADATA (fixed version) ----
+            content_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else None
 
-            meta = await PageMetadata.filter(page=page).first()
-            if not meta:
-                meta = await PageMetadata.create(
+            metadata = await PageMetadata.get_or_none(page=page)
+
+            if metadata is None:
+                metadata = await PageMetadata.create(
                     page=page,
                     html_length=len(html),
                     text_length=len(text),
                     link_count=0,
                     language=None,
                     content_hash=content_hash,
-                    keywords=None,
+                    keywords=None
                 )
             else:
-                meta.html_length = len(html)
-                meta.text_length = len(text)
-                meta.content_hash = content_hash
-                await meta.save()
+                metadata.html_length = len(html)
+                metadata.text_length = len(text)
+                metadata.content_hash = content_hash
+                await metadata.save()
 
-            # 5) لینک‌ها
+            # ---- Extract links ----
             links = extract_links(url, html)
             link_count = len(links)
 
-            # آپدیت link_count همیشه
-            meta.link_count = link_count
-            await meta.save()
+            # update metadata.link_count
+            metadata.link_count = link_count
+            await metadata.save()
 
-            if link_count > 0:
-                base_domain = urlparse(url).netloc
+            # ---- Save links + enqueue ----
+            base_domain = urlparse(url).netloc
 
-                for link in links[:1000]:
-                    parsed = urlparse(link)
-                    is_internal = parsed.netloc == base_domain
+            for link in links[:1000]:
+                parsed = urlparse(link)
+                is_internal = parsed.netloc == base_domain
 
-                    await OutboundLink.create(
-                        source_page=page,
-                        target_url=link,
-                        is_internal=is_internal,
-                    )
-
-                    await self.queue.enqueue_url(link)
-
-                logger.info(
-                    f"[Worker-{self.worker_id}] Found and queued {link_count} links from {url}"
+                await OutboundLink.create(
+                    source_page=page,
+                    target_url=link,
+                    is_internal=is_internal,
                 )
 
+                await self.queue.enqueue_url(link)
+
             logger.info(
-                f"[Worker-{self.worker_id}] Crawled: {url} ({len(html)} bytes, status={response.status_code})"
+                f"[Worker-{self.worker_id}] Crawled: {url} ({len(html)} bytes, links={link_count}, status={response.status_code})"
             )
 
         except Exception as e:
             logger.error(f"[Worker-{self.worker_id}] Error processing {url}: {e}")
+
             await CrawlErrorLog.create(
                 url=url,
                 status_code=None,
                 error_message=str(e),
                 worker_id=self.worker_id,
             )
+
             await self.queue.mark_error(url)
 
         else:
             await self.queue.mark_done(url)
 
+    # ---- Worker Loop ----
     async def run(self) -> None:
         logger.info(f"Worker-{self.worker_id} started.")
         while True:
@@ -162,4 +151,4 @@ class Worker:
             if url:
                 await self.process_url(url)
             else:
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
