@@ -32,9 +32,13 @@ class Worker:
         self.worker_id = worker_id
 
     async def _respect_domain_policy(self, url: str) -> None:
+        """
+        نرخ خزش برای هر دامنه را کنترل می‌کند (politeness).
+        """
         parsed = urlparse(url)
         domain = parsed.netloc
 
+        # اینجا get_or_create مشکلی ندارد و ساده است
         policy, _ = await DomainCrawlPolicy.get_or_create(
             domain=domain,
             defaults={"min_delay_ms": 1000},
@@ -43,7 +47,6 @@ class Worker:
         now = datetime.now(timezone.utc)
 
         if policy.last_crawled_at:
-            # فاصله زمانی امن + سازگار با timezone-aware
             delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
             wait_ms = policy.min_delay_ms - delta_ms
             if wait_ms > 0:
@@ -61,14 +64,14 @@ class Worker:
                 response = await client.get(url)
                 html = response.text
 
-            # ذخیره HTML کامل در Mongo
+            # 1) ذخیره HTML کامل در MongoDB
             await self.mongo.save_page(url, response.status_code, html)
 
-            # استخراج متن و عنوان
+            # 2) استخراج عنوان و متن
             text = extract_text(html)
             title = extract_title(html)
 
-            # ذخیره در Page
+            # 3) ذخیره/آپدیت رکورد صفحه در CrawledPage
             page, created = await CrawledPage.get_or_create(
                 url=url,
                 defaults={
@@ -84,42 +87,39 @@ class Worker:
                 page.content = html[:5000]
                 await page.save()
 
-            # هَش متن
+            # 4) متادیتا: اگر وجود دارد، آپدیت؛ اگر نه، بساز
             content_hash = (
                 hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-                if text else None
+                if text
+                else None
             )
 
-            # ایجاد یا گرفتن متادیتا (بدون هیچ احتمال تولید collection)
-            meta, meta_created = await PageMetadata.get_or_create(
-                page=page,
-                defaults={
-                    "html_length": len(html),
-                    "text_length": len(text),
-                    "link_count": 0,
-                    "language": None,
-                    "content_hash": content_hash,
-                    "keywords": None,
-                },
-            )
-
-            if not meta_created:
-                # همیشه آپدیت ایمن
+            meta = await PageMetadata.filter(page=page).first()
+            if not meta:
+                meta = await PageMetadata.create(
+                    page=page,
+                    html_length=len(html),
+                    text_length=len(text),
+                    link_count=0,
+                    language=None,
+                    content_hash=content_hash,
+                    keywords=None,
+                )
+            else:
                 meta.html_length = len(html)
                 meta.text_length = len(text)
                 meta.content_hash = content_hash
                 await meta.save()
 
-            # لینک‌ها
+            # 5) لینک‌ها
             links = extract_links(url, html)
             link_count = len(links)
 
-            # آپدیت meta بعد از شمارش لینک
+            # آپدیت link_count همیشه
             meta.link_count = link_count
             await meta.save()
 
             if link_count > 0:
-
                 base_domain = urlparse(url).netloc
 
                 for link in links[:1000]:
