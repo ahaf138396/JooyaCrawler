@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import time
 from datetime import datetime, timezone
+from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -32,6 +33,11 @@ from crawler.monitoring.metrics_server import (
 )
 
 
+MAX_PARSE_BYTES = 500_000
+MAX_LINKS_PER_PAGE = 1000
+MAX_LINKS_HEAVY_PAGE = 200
+
+
 class Worker:
     def __init__(
         self,
@@ -43,6 +49,7 @@ class Worker:
         self.mongo = mongo
         self.worker_id = worker_id
         self.name = f"Worker-{worker_id}"
+        self.client: Optional[httpx.AsyncClient] = None
 
     # --------------------------
     #  Domain crawl policy
@@ -75,13 +82,15 @@ class Worker:
     # --------------------------
     #  HTTP fetch with metrics
     # --------------------------
-    async def _fetch(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+    async def _fetch(self, url: str) -> httpx.Response:
         worker_label = str(self.worker_id)
         REQUEST_COUNT.labels(worker=worker_label).inc()
 
         start = time.perf_counter()
+        if self.client is None:
+            raise RuntimeError("HTTP client is not initialized")
         try:
-            resp = await client.get(
+            resp = await self.client.get(
                 url,
                 headers={
                     "User-Agent": "JooyaCrawler/0.1 (+https://example.com)",
@@ -91,7 +100,6 @@ class Worker:
                     ),
                     "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
                 },
-                follow_redirects=True,
             )
             return resp
         finally:
@@ -107,11 +115,19 @@ class Worker:
         try:
             await self._respect_domain_policy(url)
 
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await self._fetch(client, url)
+            response = await self._fetch(url)
 
             status_code = response.status_code
             html = response.text or ""
+
+            parse_source = html
+            heavy_page = len(html) > MAX_PARSE_BYTES
+            if heavy_page:
+                parse_source = html[:MAX_PARSE_BYTES]
+                logger.debug(
+                    f"[{self.name}] Large page detected ({len(html)} bytes); "
+                    f"parsing first {MAX_PARSE_BYTES} bytes"
+                )
 
             # ذخیره نسخه خام در Mongo
             await self.mongo.save_page(url, status_code, html)
@@ -122,8 +138,8 @@ class Worker:
                 raise Exception(f"Non-success status code: {status_code}")
 
             # Parsing
-            text = extract_text(html) or ""
-            title = extract_title(html) or ""
+            text = extract_text(parse_source) or ""
+            title = extract_title(parse_source) or ""
 
             # Hash برای تشخیص تغییر محتوا
             content_for_hash = text if text else html
@@ -171,7 +187,7 @@ class Worker:
                 await meta.save()
 
             # لینک‌ها
-            links = extract_links(url, html) or []
+            links = extract_links(url, parse_source) or []
             base_domain = urlparse(url).netloc.lower()
 
             # حذف تکراری‌ها
@@ -186,6 +202,9 @@ class Worker:
                 unique_links.append(link)
 
             link_count = len(unique_links)
+            max_links_to_queue = (
+                MAX_LINKS_HEAVY_PAGE if heavy_page else MAX_LINKS_PER_PAGE
+            )
 
             if link_count > 0:
                 # به‌روزرسانی link_count در متادیتا
@@ -193,7 +212,8 @@ class Worker:
                 await meta.save()
 
                 # ذخیره OutboundLink و صف کردن لینک‌های جدید
-                for link in unique_links[:1000]:
+                links_to_queue = unique_links[:max_links_to_queue]
+                for link in links_to_queue:
                     parsed = urlparse(link)
                     is_internal = parsed.netloc.lower() == base_domain
 
@@ -207,7 +227,7 @@ class Worker:
 
                 logger.info(
                     f"[{self.name}] Found {link_count} links from {url} "
-                    f"(queued up to {min(link_count, 1000)})"
+                    f"(queued up to {len(links_to_queue)})"
                 )
 
             # Metrics
@@ -240,11 +260,23 @@ class Worker:
         WORKER_ACTIVE.labels(worker_id=worker_label).set(1.0)
 
         logger.info(f"{self.name} started.")
-        while True:
-            url = await self.queue.dequeue_url()
-            if url is None:
-                await asyncio.sleep(3)
-                continue
+        timeout = httpx.Timeout(20.0, connect=5.0)
 
-            logger.debug(f"[{self.name}] Dequeued: {url}")
-            await self.process_url(url)
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+            ) as client:
+                self.client = client
+
+                while True:
+                    url = await self.queue.dequeue_url()
+                    if url is None:
+                        await asyncio.sleep(3)
+                        continue
+
+                    logger.debug(f"[{self.name}] Dequeued: {url}")
+                    await self.process_url(url)
+        finally:
+            self.client = None
+            WORKER_ACTIVE.labels(worker_id=worker_label).set(0.0)
