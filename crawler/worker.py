@@ -1,6 +1,6 @@
 import asyncio
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -31,6 +31,8 @@ class Worker:
         self.mongo = mongo
         self.worker_id = worker_id
 
+
+
     async def _respect_domain_policy(self, url: str) -> None:
         parsed = urlparse(url)
         domain = parsed.netloc
@@ -40,7 +42,8 @@ class Worker:
             defaults={"min_delay_ms": 1000},
         )
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+
         if policy.last_crawled_at:
             delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
             wait_ms = policy.min_delay_ms - delta_ms
