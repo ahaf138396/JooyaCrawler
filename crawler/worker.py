@@ -9,7 +9,7 @@ from crawler.monitoring.metrics_server import (
     CRAWLED_PAGES,
     FAILED_REQUESTS,
 )
-from crawler.utils.url_normalizer import normalize_url
+from crawler.utils.url_utils import normalize_url
 
 
 class Worker:
