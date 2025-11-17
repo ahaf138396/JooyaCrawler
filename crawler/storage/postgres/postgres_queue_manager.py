@@ -7,21 +7,16 @@ from crawler.storage.models.queue_model import CrawlQueue
 
 class PostgresQueueManager:
     async def enqueue_url(self, url: str, priority: int = 0) -> None:
-        """
-        اضافه کردن URL به صف (اگر وجود داشته باشد، دوباره pending اش می‌کنیم).
-        """
-        obj, created = await CrawlQueue.get_or_create(
-            url=url,
-            defaults={"priority": priority, "status": "pending"},
-        )
+        obj = await CrawlQueue.filter(url=url).first()
 
-        if not created and obj.status in ("done", "error"):
+        if obj is None:
+            await CrawlQueue.create(url=url, priority=priority, status="pending")
+            return
+
+        if obj.status in ("done", "error", "processing"):
             obj.status = "pending"
-            obj.priority = priority
             obj.error_count = 0
             await obj.save()
-
-        logger.debug(f"URL enqueued: {url}")
 
     async def dequeue_url(self) -> Optional[str]:
         """
