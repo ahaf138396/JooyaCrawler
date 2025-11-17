@@ -1,106 +1,92 @@
 import asyncio
-import aiohttp
+import httpx
 from loguru import logger
-from bs4 import BeautifulSoup
 
+from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
+from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from crawler.monitoring.metrics_server import (
-    REQUEST_COUNT,
-    REQUEST_LATENCY,
-    CRAWLED_PAGES,
-    FAILED_REQUESTS,
+    WORKER_PROCESSED,
+    WORKER_FAILED,
+    WORKER_ACTIVE,
 )
-from crawler.utils.url_utils import normalize_url
 
 
 class Worker:
-    def __init__(self, queue, mongo, worker_id):
+    def __init__(self, queue: PostgresQueueManager, mongo: MongoStorageManager, worker_id: int):
         self.queue = queue
         self.mongo = mongo
-        self.session = None
         self.worker_id = worker_id
+        self.running = True
 
-    async def fetch(self, url: str) -> str | None:
-        """Fetch URL content with retries and metrics."""
-        retries = 3
-        timeout = aiohttp.ClientTimeout(total=10)
+        # هر Worker یک Active Flag برای Prometheus دارد
+        WORKER_ACTIVE.labels(worker_id=self.worker_id).set(1)
 
-        for attempt in range(1, retries + 1):
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    self.session = session
+        # timeout کاملاً استاندارد
+        self.timeout = httpx.Timeout(
+            timeout=12.0,
+            connect=12.0,
+            read=12.0,
+            write=12.0,
+            pool=12.0,
+        )
 
-                    with REQUEST_LATENCY.labels(worker=self.worker_id).time():
-                        async with session.get(url, headers={
-                            "User-Agent": "JooyaCrawler/1.0"
-                        }) as resp:
-                            REQUEST_COUNT.labels(worker=self.worker_id).inc()
+        self.client = httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,   # برای سایت‌های ریدایرکت
+            headers={
+                "User-Agent": "JooyaCrawler/1.0 (+https://jooya.ai)"
+            }
+        )
 
-                            if resp.status != 200:
-                                FAILED_REQUESTS.labels(worker=self.worker_id).inc()
-                                return None
+    async def fetch(self, url: str):
+        try:
+            response = await self.client.get(url)
 
-                            return await resp.text()
+            if response.status_code >= 400:
+                raise Exception(f"HTTP {response.status_code}")
 
-            except Exception as e:
-                logger.warning(
-                    f"[Worker-{self.worker_id}] Fetch failed ({attempt}/3) for {url}: {e}"
-                )
-                await asyncio.sleep(1)
+            return response.text, response.status_code
 
-        FAILED_REQUESTS.labels(worker=self.worker_id).inc()
-        return None
+        except httpx.TimeoutException:
+            raise Exception("Timeout while fetching URL")
+
+        except httpx.ConnectError:
+            raise Exception("Connection failed")
+
+        except Exception as e:
+            raise Exception(f"Network error: {str(e)}")
 
     async def process_url(self, url: str):
         try:
-            # Duplicate check
-            existing = await self.mongo.find_page(url)
-            if existing is not None:
-                return
+            html, status_code = await self.fetch(url)
 
-            html = await self.fetch(url)
-            if not html:
-                return
+            # ذخیره در Mongo
+            await self.mongo.store_page(url, html, status_code)
 
-            soup = BeautifulSoup(html, "html.parser")
-            text = soup.get_text(separator=" ").strip()
-            links = [normalize_url(a.get("href"), url) for a in soup.find_all("a")]
-            links = [l for l in links if l]
+            # Mark Done
+            await self.queue.mark_done(url)
 
-            # Mongo save
-            await self.mongo.save_page(
-                url=url,
-                html=html,
-                text=text[:10000],  # limit for safety
-                links=links,
-            )
-
-            # Save metadata
-            await self.mongo.save_metadata(
-                url=url,
-                html_length=len(html),
-                text_length=len(text),
-                link_count=len(links),
-            )
-
-            # Queue discovered links
-            for link in links:
-                await self.queue.enqueue_url(link)
-
-            CRAWLED_PAGES.labels(worker=self.worker_id).inc()
-
-            logger.info(f"[Worker-{self.worker_id}] Crawled: {url}")
+            WORKER_PROCESSED.labels(worker_id=self.worker_id).inc()
+            logger.info(f"[Worker-{self.worker_id}] DONE: {url}")
 
         except Exception as e:
-            logger.error(
-                f"[Worker-{self.worker_id}] Error processing {url}: {e}"
-            )
+            WORKER_FAILED.labels(worker_id=self.worker_id).inc()
+
+            await self.queue.mark_error(url, str(e), self.worker_id)
+
+            logger.error(f"[Worker-{self.worker_id}] Error processing {url}: {e}")
 
     async def run(self):
         logger.info(f"Worker-{self.worker_id} started.")
-        while True:
-            url = await self.queue.dequeue_url()
-            if not url:
-                await asyncio.sleep(0.1)
+
+        while self.running:
+            item = await self.queue.dequeue_url()
+
+            if not item:
+                await asyncio.sleep(0.5)
                 continue
+
+            url = item.url
+            logger.debug(f"[Worker-{self.worker_id}] Dequeued: {url}")
 
             await self.process_url(url)
