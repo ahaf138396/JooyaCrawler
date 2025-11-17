@@ -1,8 +1,12 @@
+import asyncio
 import datetime as dt
 from typing import Optional
 
 from loguru import logger
 from crawler.storage.models.queue_model import CrawlQueue
+
+
+_dequeue_lock = asyncio.Lock()
 
 
 class PostgresQueueManager:
@@ -22,21 +26,22 @@ class PostgresQueueManager:
             )
 
     async def dequeue_url(self) -> Optional[str]:
-        item = (
-            await CrawlQueue.filter(status="pending")
-            .order_by("-priority", "id")
-            .first()
-        )
+        async with _dequeue_lock:
+            item = (
+                await CrawlQueue.filter(status="pending")
+                .order_by("-priority", "id")
+                .first()
+            )
 
-        if not item:
-            return None
+            if not item:
+                return None
 
-        item.status = "processing"
-        item.last_attempt_at = dt.datetime.utcnow()
-        await item.save()
+            item.status = "processing"
+            item.last_attempt_at = dt.datetime.utcnow()
+            await item.save()
 
-        logger.debug(f"Dequeued: {item.url}")
-        return item.url
+            logger.debug(f"Dequeued: {item.url}")
+            return item.url
 
     async def mark_done(self, url: str) -> None:
         await CrawlQueue.filter(url=url).update(status="done")
