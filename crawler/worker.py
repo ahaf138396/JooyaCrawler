@@ -1,16 +1,15 @@
 import asyncio
+import traceback
 import httpx
 from loguru import logger
-import traceback
 
-from crawler.storage.models import CrawlErrorLog
-from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
-from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from crawler.monitoring.metrics_server import (
     WORKER_PROCESSED,
-    WORKER_FAILED,
     WORKER_ACTIVE,
 )
+from crawler.storage.models import CrawlErrorLog
+from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
+from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
 
 
 class Worker:
