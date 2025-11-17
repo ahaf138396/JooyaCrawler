@@ -24,7 +24,7 @@ class MongoStorageManager:
         logger.info(f"Connected to MongoDB: {self.uri}")
 
     async def save_page(self, url: str, status_code: int, html: str) -> None:
-        if not self.collection:
+        if self.collection is None:
             raise RuntimeError("MongoStorageManager is not connected")
 
         doc = {
