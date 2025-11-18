@@ -62,7 +62,7 @@ async def main() -> None:
     scheduler = Scheduler(queue, seed_urls, interval_seconds=10)
 
     # ---- Worker Pool ----
-    WORKER_COUNT = int(os.getenv("WORKERS", 3))
+    WORKER_COUNT = int(os.getenv("WORKERS", 12))
     workers = [Worker(queue, mongo, i).run() for i in range(WORKER_COUNT)]
 
     # ---- Metrics Server ----
