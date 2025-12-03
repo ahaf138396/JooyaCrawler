@@ -14,7 +14,7 @@ from crawler.parsing.html_extractor import (
     extract_links,
 )
 from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
-from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
+from crawler.storage.radar_queue_manager import FrontierTask, RadarQueueManager
 
 from crawler.storage.models.page_model import CrawledPage
 from crawler.storage.models.outbound_link_model import OutboundLink
@@ -41,7 +41,7 @@ MAX_LINKS_HEAVY_PAGE = 200
 class Worker:
     def __init__(
         self,
-        queue: PostgresQueueManager,
+        queue: RadarQueueManager,
         mongo: MongoStorageManager,
         worker_id: int,
     ):
@@ -109,13 +109,16 @@ class Worker:
     # --------------------------
     #  Main processing
     # --------------------------
-    async def process_url(self, url: str) -> None:
+    async def process_url(self, task: FrontierTask) -> None:
         worker_label = str(self.worker_id)
+        url = task.url
 
         if "fa.wikipedia.org" in url:
             parsed = urlparse(url)
             if not parsed.path.startswith("/wiki/"):
                 return
+
+        status_code: Optional[int] = None
 
         try:
 
@@ -229,7 +232,12 @@ class Worker:
                         is_internal=is_internal,
                     )
 
-                    await self.queue.enqueue_url(link)
+                    await self.queue.enqueue_url(
+                        link,
+                        source_id=task.source_id,
+                        depth=task.depth + 1,
+                        priority=task.priority,
+                    )
 
                 logger.info(
                     f"[{self.name}] Found {link_count} links from {url} "
@@ -244,7 +252,7 @@ class Worker:
                 f"[{self.name}] Crawled: {url} ({html_length} bytes, status={status_code})"
             )
 
-            await self.queue.mark_done(url)
+            await self.queue.mark_done(task.id, status_code)
 
         except Exception as e:
             logger.error(f"[{self.name}] Error processing {url}: {e}")
@@ -252,11 +260,11 @@ class Worker:
 
             await CrawlErrorLog.create(
                 url=url,
-                status_code=None,
+                status_code=status_code,
                 error_message=str(e),
                 worker_id=self.worker_id,
             )
-            await self.queue.mark_error(url)
+            await self.queue.mark_failed(task.id, status_code=status_code, error_code=str(e))
 
     # --------------------------
     #  Worker loop
@@ -277,13 +285,13 @@ class Worker:
                 self.client = client
 
                 while True:
-                    url = await self.queue.dequeue_url()
-                    if url is None:
+                    task = await self.queue.dequeue_task()
+                    if task is None:
                         await asyncio.sleep(3)
                         continue
 
-                    logger.debug(f"[{self.name}] Dequeued: {url}")
-                    await self.process_url(url)
+                    logger.debug(f"[{self.name}] Dequeued: {task.url}")
+                    await self.process_url(task)
         finally:
             self.client = None
             WORKER_ACTIVE.labels(worker_id=worker_label).set(0.0)

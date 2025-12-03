@@ -16,19 +16,18 @@ except ImportError:
 # -------------------------------
 from crawler.monitoring.metrics_server import start_metrics_server, QUEUE_PENDING
 from crawler.storage.postgres.postgres_init import init_postgres
-from crawler.storage.postgres.postgres_queue_manager import PostgresQueueManager
 from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
-from crawler.scheduler import Scheduler
+from crawler.storage.radar_queue_manager import RadarQueueManager
 from crawler.worker import Worker
 
 
 # -------------------------------
 # QUEUE METRIC MONITOR TASK
 # -------------------------------
-async def monitor_queue_size(queue: PostgresQueueManager):
+async def monitor_queue_size(queue: RadarQueueManager):
     while True:
         try:
-            count = await queue.count_pending()
+            count = await queue.count_scheduled()
             QUEUE_PENDING.set(count)
         except Exception as e:
             logger.error(f"Queue monitor error: {e}")
@@ -44,7 +43,8 @@ async def main() -> None:
 
     # ---- PostgreSQL ----
     await init_postgres()
-    queue = PostgresQueueManager()
+    queue = RadarQueueManager()
+    await queue.connect()
 
     # ---- MongoDB ----
     mongo_uri = os.getenv(
@@ -54,12 +54,6 @@ async def main() -> None:
 
     mongo = MongoStorageManager(mongo_uri)
     await mongo.connect()
-
-    # ---- Seed URLs ----
-    seed_urls = [
-        "https://fa.wikipedia.org/wiki/%D8%B5%D9%81%D8%AD%D9%87%D9%94_%D8%A7%D8%B5%D9%84%DB%8C",
-    ]
-    scheduler = Scheduler(queue, seed_urls, interval_seconds=10)
 
     # ---- Worker Pool ----
     WORKER_COUNT = int(os.getenv("WORKERS", 12))
@@ -73,10 +67,7 @@ async def main() -> None:
 
     # ---- Run Main Tasks Concurrently ----
     logger.info("Crawler system started successfully.")
-    await asyncio.gather(
-        scheduler.run(),
-        *workers,
-    )
+    await asyncio.gather(*workers)
 
 
 # -------------------------------
