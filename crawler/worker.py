@@ -156,6 +156,10 @@ class Worker:
         if "fa.wikipedia.org" in url:
             parsed = urlparse(url)
             if not parsed.path.startswith("/wiki/"):
+                logger.info(
+                    f"[{self.name}] Skipping non-article Wikipedia URL: {url}"
+                )
+                await self.queue.mark_done(task.id, None)
                 return
 
         status_code: Optional[int] = None
