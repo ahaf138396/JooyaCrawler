@@ -21,6 +21,7 @@ from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from tortoise import Tortoise
 
 from crawler.storage.radar_queue_manager import RadarQueueManager
+from crawler.utils.env_loader import load_environment
 from crawler.worker import Worker
 
 
@@ -43,6 +44,8 @@ async def monitor_queue_size(queue: RadarQueueManager):
 async def main() -> None:
 
     logger.info("Starting crawler system...")
+
+    load_environment()
 
     # ---- PostgreSQL ----
     await init_postgres()

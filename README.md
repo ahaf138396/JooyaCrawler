@@ -127,13 +127,19 @@ pip install -r requirements.txt
 
 ### 3. Configure Environment
 
-در مسیر `env/`:
+متغیرهای محیطی مهم در فایل `.env` ریشه پروژه تعریف شده‌اند. مقادیر پیش‌فرض شامل:
 
 ```
 POSTGRES_USER=jooya
-POSTGRES_PASSWORD=change_me
-POSTGRES_DB=jooyadb
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=jooyacrawlerdb
+DATABASE_URL=postgresql://jooya:postgres@postgres:5432/jooyacrawlerdb
+MONGO_URI=mongodb://localhost:27017/jooyacrawlerdb
+REDIS_URL=redis://localhost:6379/0
+WORKERS=12
 ```
+
+در صورت نیاز به تغییر، فایل `.env` را ویرایش کنید یا متغیرها را قبل از اجرا ست نمایید.
 
 ---
 
