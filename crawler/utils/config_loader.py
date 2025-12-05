@@ -2,7 +2,7 @@ import os
 
 import yaml
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from crawler.utils.env_loader import load_environment
 
@@ -18,9 +18,7 @@ class Config(BaseSettings):
     request_timeout: int = 10
     crawler_user_agent: str = DEFAULT_USER_AGENT
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     log_level: str = "INFO"
 

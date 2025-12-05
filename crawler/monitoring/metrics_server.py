@@ -78,6 +78,12 @@ ROBOTS_SKIPPED = Counter(
     ["worker"]
 )
 
+SKIPPED_LINKS = Counter(
+    "jooya_skipped_links_total",
+    "Links not enqueued due to policy constraints",
+    ["reason"],
+)
+
 # -------------------------
 # Queue Metrics
 # -------------------------
