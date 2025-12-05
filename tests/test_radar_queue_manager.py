@@ -162,3 +162,33 @@ async def test_mark_done_and_failed_execute_statements():
     assert second_args[2] == "TIMEOUT"
     assert second_args[3] == "network"
     assert second_args[4] == 7
+
+
+@pytest.mark.anyio
+async def test_mark_done_increments_crawled_count_when_limited():
+    manager = RadarQueueManager(max_depth=None, max_pages=2)
+    manager.crawled_count = 1
+    conn = RecordingConnection()
+    manager.pool = DummyPool(conn)
+
+    await manager.mark_done(5, 200)
+
+    assert manager.crawled_count == 2
+
+
+@pytest.mark.anyio
+async def test_enqueue_respects_max_pages(monkeypatch):
+    manager = RadarQueueManager(max_depth=None, max_pages=1)
+    manager.crawled_count = 1
+    conn = RecordingConnection()
+    manager.pool = DummyPool(conn)
+
+    await manager.enqueue_url(
+        "https://example.com/page",
+        source_id=1,
+        depth=0,
+        priority=0,
+    )
+
+    assert conn.executed == []
+    assert manager.has_reached_max_pages()

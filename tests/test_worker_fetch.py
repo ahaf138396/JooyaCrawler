@@ -5,7 +5,7 @@ from crawler.monitoring.metrics_server import SKIPPED_LARGE_BODIES, SKIPPED_NON_
 from crawler.worker import Worker, FetchResult
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fetch_skips_non_html_content():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -29,7 +29,7 @@ async def test_fetch_skips_non_html_content():
     assert SKIPPED_NON_HTML.labels(worker="1")._value.get() == before + 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fetch_skips_large_bodies(monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -56,7 +56,7 @@ async def test_fetch_skips_large_bodies(monkeypatch):
     assert SKIPPED_LARGE_BODIES.labels(worker="2")._value.get() == before + 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fetch_returns_html_body():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

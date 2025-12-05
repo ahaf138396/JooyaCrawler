@@ -38,7 +38,9 @@ from crawler.monitoring.metrics_server import (
     SKIPPED_LARGE_BODIES,
     SKIPPED_LINKS,
 )
-from crawler.utils.config_loader import get_crawler_user_agent
+from crawler.utils.config_loader import load_config
+from crawler.utils.filters import is_valid_link
+from crawler.utils.url_utils import get_domain
 from crawler.utils.robots import RobotsHandler
 
 
@@ -69,7 +71,9 @@ class Worker:
         self.worker_id = worker_id
         self.name = f"Worker-{worker_id}"
         self.client: Optional[httpx.AsyncClient] = None
-        self.user_agent = get_crawler_user_agent()
+        config = load_config()
+        self.user_agent = config.crawler_user_agent
+        self.default_min_delay_ms = int(config.crawl_delay_default * 1000)
         self.robots_handler: Optional[RobotsHandler] = None
 
     # --------------------------
@@ -115,7 +119,7 @@ class Worker:
                 if policy is None:
                     policy = await DomainCrawlPolicy.using_db(conn).create(
                         domain=domain,
-                        min_delay_ms=1000,
+                        min_delay_ms=self.default_min_delay_ms,
                         last_crawled_at=None,
                         next_allowed_at=None,
                         crawled_today=0,
@@ -265,12 +269,22 @@ class Worker:
 
             if fetch_result.skipped:
                 await self.queue.mark_done(task.id, status_code)
+                WORKER_PROCESSED.labels(worker_id=worker_label).inc()
                 logger.info(
                     f"[{self.name}] Skipped {url} ({fetch_result.skip_reason or 'unknown reason'})"
                 )
                 return
 
             html = fetch_result.content or ""
+
+            if status_code in {404, 410}:
+                await self.queue.mark_done(task.id, status_code)
+                WORKER_PROCESSED.labels(worker_id=worker_label).inc()
+                SKIPPED_LINKS.labels(reason="http_status").inc()
+                logger.info(
+                    f"[{self.name}] Skipping {url} due to HTTP status {status_code}"
+                )
+                return
 
             parse_source = html
             heavy_page = len(html) > MAX_PARSE_BYTES
@@ -284,8 +298,14 @@ class Worker:
             # ذخیره نسخه خام در Mongo
             await self.mongo.save_page(url, status_code, html)
 
-            # اگر خطای HTTP یا بدنه خالی بود، لاگ خطا و علامت‌گذاری error
-            if status_code >= 400 or not html.strip():
+            if not html.strip():
+                await self.queue.mark_done(task.id, status_code)
+                WORKER_PROCESSED.labels(worker_id=worker_label).inc()
+                SKIPPED_LINKS.labels(reason="empty_body").inc()
+                logger.info(f"[{self.name}] Empty body returned for {url}")
+                return
+
+            if status_code >= 400:
                 FAILED_REQUESTS.labels(worker=worker_label).inc()
                 raise Exception(f"Non-success status code: {status_code}")
 
@@ -340,7 +360,7 @@ class Worker:
 
             # لینک‌ها
             links = extract_links(url, parse_source) or []
-            base_domain = urlparse(url).netloc.lower()
+            base_domain = get_domain(url)
 
             # حذف تکراری‌ها
             unique_links = []
@@ -353,7 +373,14 @@ class Worker:
                 seen.add(link)
                 unique_links.append(link)
 
-            link_count = len(unique_links)
+            filtered_links = []
+            for link in unique_links:
+                if not is_valid_link(base_domain, link):
+                    SKIPPED_LINKS.labels(reason="invalid_link").inc()
+                    continue
+                filtered_links.append(link)
+
+            link_count = len(filtered_links)
             max_links_to_queue = (
                 MAX_LINKS_HEAVY_PAGE if heavy_page else MAX_LINKS_PER_PAGE
             )
@@ -364,7 +391,7 @@ class Worker:
                 await meta.save()
 
                 # ذخیره OutboundLink و صف کردن لینک‌های جدید
-                links_to_queue = unique_links[:max_links_to_queue]
+                links_to_queue = filtered_links[:max_links_to_queue]
                 skipped_due_to_depth = 0
                 next_depth = task.depth + 1
                 for link in links_to_queue:
@@ -446,8 +473,19 @@ class Worker:
                 self.robots_handler = RobotsHandler(client, self.user_agent)
 
                 while True:
+                    if self.queue.has_reached_max_pages():
+                        logger.info(
+                            f"{self.name} stopping; max_pages={self.queue.max_pages} reached"
+                        )
+                        break
+
                     task = await self.queue.dequeue_task()
                     if task is None:
+                        if self.queue.has_reached_max_pages():
+                            logger.info(
+                                f"{self.name} stopping; max_pages={self.queue.max_pages} reached"
+                            )
+                            break
                         await asyncio.sleep(3)
                         continue
 

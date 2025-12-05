@@ -29,7 +29,7 @@ class FrontierTask:
 class RadarQueueManager:
     """Interact with the Radar frontier tables via asyncpg."""
 
-    def __init__(self, *, max_depth: Optional[int] = None) -> None:
+    def __init__(self, *, max_depth: Optional[int] = None, max_pages: Optional[int] = None) -> None:
         load_environment()
         url = os.getenv("RADAR_DATABASE_URL") or os.getenv("DATABASE_URL")
         if not url:
@@ -53,10 +53,34 @@ class RadarQueueManager:
             )
             self.max_depth = None
 
+        raw_max_pages = os.getenv("MAX_PAGES")
+        self.max_pages: Optional[int]
+        try:
+            if max_pages is not None:
+                self.max_pages = max_pages
+            elif raw_max_pages:
+                self.max_pages = int(raw_max_pages)
+            else:
+                self.max_pages = None
+        except ValueError:
+            logger.warning(
+                f"Invalid MAX_PAGES value '{raw_max_pages}', disabling page limit."
+            )
+            self.max_pages = None
+
+        self.crawled_count = 0
+
     async def connect(self) -> None:
         if self.pool is None:
             self.pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=10)
             logger.info("Connected to Radar frontier database")
+
+            if self.max_pages is not None:
+                async with self.pool.acquire() as conn:
+                    self.crawled_count = await conn.fetchval(
+                        "SELECT count(*) FROM urls_frontier WHERE status = $1",
+                        STATUS_DONE,
+                    )
 
     async def close(self) -> None:
         if self.pool:
@@ -77,6 +101,8 @@ class RadarQueueManager:
 
     async def dequeue_task(self) -> Optional[FrontierTask]:
         if not self.pool:
+            return None
+        if self.has_reached_max_pages():
             return None
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -126,6 +152,9 @@ class RadarQueueManager:
                 status_code,
                 task_id,
             )
+
+            if self.max_pages is not None:
+                self.crawled_count += 1
 
     async def mark_failed(
         self,
@@ -183,6 +212,13 @@ class RadarQueueManager:
                 max_depth=self.max_depth,
             )
             return
+        if self.has_reached_max_pages():
+            logger.info(
+                "Skipping enqueue for {url}; max_pages limit reached ({max_pages})",
+                url=url,
+                max_pages=self.max_pages,
+            )
+            return
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
@@ -204,3 +240,6 @@ class RadarQueueManager:
                 priority,
                 STATUS_SCHEDULED,
             )
+
+    def has_reached_max_pages(self) -> bool:
+        return self.max_pages is not None and self.crawled_count >= self.max_pages

@@ -21,6 +21,7 @@ from crawler.storage.mongo.mongo_storage_manager import MongoStorageManager
 from tortoise import Tortoise
 
 from crawler.storage.radar_queue_manager import RadarQueueManager
+from crawler.utils.config_loader import load_config
 from crawler.utils.env_loader import load_environment
 from crawler.worker import Worker
 
@@ -46,15 +47,16 @@ async def main() -> None:
     logger.info("Starting crawler system...")
 
     load_environment()
+    config = load_config()
 
     metrics_runner = None
     metrics_site = None
 
     # ---- PostgreSQL ----
     await init_postgres()
-    max_depth_env = os.getenv("MAX_DEPTH")
+    max_depth_env = os.getenv("MAX_DEPTH") or config.max_depth
     max_depth = None
-    if max_depth_env:
+    if max_depth_env is not None:
         try:
             max_depth = int(max_depth_env)
             logger.info(f"Max crawl depth set to {max_depth}")
@@ -63,16 +65,31 @@ async def main() -> None:
                 f"Ignoring invalid MAX_DEPTH value '{max_depth_env}'; proceeding without limit."
             )
 
-    queue = RadarQueueManager(max_depth=max_depth)
+    max_pages_env = os.getenv("MAX_PAGES") or config.max_pages
+    max_pages = None
+    if max_pages_env is not None:
+        try:
+            max_pages = int(max_pages_env)
+            logger.info(f"Max pages limit set to {max_pages}")
+        except ValueError:
+            logger.warning(
+                f"Ignoring invalid MAX_PAGES value '{max_pages_env}'; proceeding without limit."
+            )
+
+    queue = RadarQueueManager(max_depth=max_depth, max_pages=max_pages)
     await queue.connect()
 
     # ---- MongoDB ----
-    mongo_uri = os.getenv(
-        "MONGO_URI",
-        "mongodb://localhost:27017/jooyacrawlerdb",
-    )
+    mongo_uri = os.getenv("MONGO_URI") or os.getenv("MONGO_URL") or config.mongo_url
+    mongo_db = os.getenv("MONGO_DB") or config.mongo_db
+    max_html_bytes_env = os.getenv("MAX_SAVED_HTML_BYTES")
+    max_html_bytes = int(max_html_bytes_env) if max_html_bytes_env else 500_000
 
-    mongo = MongoStorageManager(mongo_uri)
+    mongo = MongoStorageManager(
+        mongo_uri,
+        db_name=mongo_db,
+        max_html_bytes=max_html_bytes,
+    )
     await mongo.connect()
 
     # ---- Worker Pool ----
