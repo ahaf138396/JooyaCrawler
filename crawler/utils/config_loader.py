@@ -5,8 +5,6 @@ from httpx import Timeout
 
 from pydantic_settings import BaseSettings
 
-from pydantic_settings import BaseSettings
-
 class Config(BaseSettings):
     redis_url: str
     postgres_url: str
@@ -24,7 +22,7 @@ class Config(BaseSettings):
 def load_config() -> Config:
     # خواندن از environment
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-    postgres_url = os.getenv("POSTGRES_URL", "postgresql://user:pass@localhost:5432/db")
+    postgres_url = os.getenv("POSTGRES_URL", "postgresql://localhost:5432/db")
     mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 
     # اگر فایل config.yaml موجود بود، ازش override کن
