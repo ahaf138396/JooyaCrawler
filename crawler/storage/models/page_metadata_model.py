@@ -16,7 +16,7 @@ class PageMetadata(models.Model):
 
     html_length = fields.IntField(null=True)
     text_length = fields.IntField(null=True)
-    link_count = fields.IntField(null=True)
+    link_count = fields.IntField(default=0)
     language = fields.CharField(max_length=16, null=True, index=True)
 
     # برای پیدا کردن صفحات تکراری
@@ -27,3 +27,9 @@ class PageMetadata(models.Model):
 
     class Meta:
         table = "page_metadata"
+        indexes = ("content_hash",)
+
+    async def save(self, *args, **kwargs):  # type: ignore[override]
+        if self.link_count is None:
+            self.link_count = 0
+        await super().save(*args, **kwargs)
