@@ -1,4 +1,4 @@
-from crawler.utils.config_loader import load_config
+from crawler.utils.config_loader import get_crawler_user_agent, load_config
 
 
 def test_load_config_prefers_environment(monkeypatch):
@@ -11,3 +11,9 @@ def test_load_config_prefers_environment(monkeypatch):
     assert config.redis_url == "redis://custom:6379/1"
     assert config.postgres_url == "postgresql://user:pass@host:1111/dbname"
     assert config.mongo_url == "mongodb://custom:27018"
+
+
+def test_get_crawler_user_agent_prefers_environment(monkeypatch):
+    monkeypatch.setenv("CRAWLER_USER_AGENT", "CustomBot/2.0")
+
+    assert get_crawler_user_agent() == "CustomBot/2.0"

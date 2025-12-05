@@ -33,9 +33,12 @@ from crawler.monitoring.metrics_server import (
     WORKER_PROCESSED,
     WORKER_FAILED,
     WORKER_ACTIVE,
+    ROBOTS_SKIPPED,
     SKIPPED_NON_HTML,
     SKIPPED_LARGE_BODIES,
 )
+from crawler.utils.config_loader import get_crawler_user_agent
+from crawler.utils.robots import RobotsHandler
 
 
 MAX_PARSE_BYTES = 500_000
@@ -65,6 +68,8 @@ class Worker:
         self.worker_id = worker_id
         self.name = f"Worker-{worker_id}"
         self.client: Optional[httpx.AsyncClient] = None
+        self.user_agent = get_crawler_user_agent()
+        self.robots_handler: Optional[RobotsHandler] = None
 
     # --------------------------
     #  Domain crawl policy
@@ -184,79 +189,18 @@ class Worker:
         }
 
         try:
-            async with self.client.stream("GET", url, headers=headers) as resp:
-                content_type_header = (resp.headers.get("content-type") or "").lower()
-                content_type = content_type_header.split(";")[0].strip()
-
-                content_length_header = resp.headers.get("content-length")
-                content_length = None
-                if content_length_header:
-                    try:
-                        content_length = int(content_length_header)
-                    except ValueError:
-                        logger.debug(
-                            f"[{self.name}] Invalid content-length header: {content_length_header}"
-                        )
-
-                if content_length is not None and content_length > MAX_DOWNLOAD_BYTES:
-                    SKIPPED_LARGE_BODIES.labels(worker=worker_label).inc()
-                    logger.warning(
-                        f"[{self.name}] Skipping {url} due to content-length={content_length} "
-                        f"> limit {MAX_DOWNLOAD_BYTES}"
-                    )
-                    return FetchResult(
-                        status_code=resp.status_code,
-                        content="",
-                        content_type=content_type,
-                        skipped=True,
-                        skip_reason="body-too-large",
-                    )
-
-                if content_type and content_type not in (
-                    "text/html",
-                    "application/xhtml+xml",
-                ):
-                    SKIPPED_NON_HTML.labels(worker=worker_label).inc()
-                    logger.info(
-                        f"[{self.name}] Skipping {url} due to non-HTML content-type: {content_type}"
-                    )
-                    return FetchResult(
-                        status_code=resp.status_code,
-                        content="",
-                        content_type=content_type,
-                        skipped=True,
-                        skip_reason="non-html-content-type",
-                    )
-
-                collected: list[bytes] = []
-                total_bytes = 0
-                async for chunk in resp.aiter_bytes():
-                    if not chunk:
-                        continue
-                    total_bytes += len(chunk)
-                    if total_bytes > MAX_DOWNLOAD_BYTES:
-                        SKIPPED_LARGE_BODIES.labels(worker=worker_label).inc()
-                        logger.warning(
-                            f"[{self.name}] Aborting download for {url}; body exceeded {MAX_DOWNLOAD_BYTES} bytes"
-                        )
-                        return FetchResult(
-                            status_code=resp.status_code,
-                            content="",
-                            content_type=content_type,
-                            skipped=True,
-                            skip_reason="body-too-large",
-                        )
-                    collected.append(chunk)
-
-                encoding = resp.encoding or "utf-8"
-                html = b"".join(collected).decode(encoding, errors="ignore")
-
-                return FetchResult(
-                    status_code=resp.status_code,
-                    content=html,
-                    content_type=content_type,
-                    skipped=False,
-                )
+            resp = await self.client.get(
+                url,
+                headers={
+                    "User-Agent": self.user_agent,
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                        "*/*;q=0.8"
+                    ),
+                    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            return resp
         finally:
             elapsed = time.perf_counter() - start
             REQUEST_LATENCY.labels(worker=worker_label).observe(elapsed)
@@ -280,6 +224,16 @@ class Worker:
         status_code: Optional[int] = None
 
         try:
+
+            if self.robots_handler is not None:
+                allowed = await self.robots_handler.is_allowed(url)
+                if not allowed:
+                    ROBOTS_SKIPPED.labels(worker=worker_label).inc()
+                    logger.info(
+                        f"[{self.name}] Skipping disallowed by robots.txt for agent {self.user_agent}: {url}"
+                    )
+                    await self.queue.mark_done(task.id, None)
+                    return
 
             await self._respect_domain_policy(url)
 
@@ -467,6 +421,7 @@ class Worker:
                     follow_redirects=True,
             ) as client:
                 self.client = client
+                self.robots_handler = RobotsHandler(client, self.user_agent)
 
                 while True:
                     task = await self.queue.dequeue_task()
@@ -478,5 +433,6 @@ class Worker:
                     await self.process_url(task)
         finally:
             self.client = None
+            self.robots_handler = None
             WORKER_ACTIVE.labels(worker_id=worker_label).set(0.0)
 

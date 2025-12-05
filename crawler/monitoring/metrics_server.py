@@ -72,11 +72,10 @@ REQUEST_LATENCY = Histogram(
     ["worker"]
 )
 
-# لینک‌هایی که قبل از اضافه شدن به صف رد شدند
-SKIPPED_LINKS = Counter(
-    "jooya_skipped_links_total",
-    "Links skipped before enqueueing",
-    ["reason"],
+ROBOTS_SKIPPED = Counter(
+    "jooya_robots_skipped_total",
+    "URLs skipped due to robots.txt disallow rules",
+    ["worker"]
 )
 
 # -------------------------
