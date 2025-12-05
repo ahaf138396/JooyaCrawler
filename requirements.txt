@@ -11,6 +11,7 @@ lxml
 prometheus-client
 python-dotenv
 pytest
+pytest-asyncio
 PyYAML
 uvloop
 motor

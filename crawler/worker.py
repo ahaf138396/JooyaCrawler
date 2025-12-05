@@ -36,6 +36,7 @@ from crawler.monitoring.metrics_server import (
     ROBOTS_SKIPPED,
     SKIPPED_NON_HTML,
     SKIPPED_LARGE_BODIES,
+    SKIPPED_LINKS,
 )
 from crawler.utils.config_loader import get_crawler_user_agent
 from crawler.utils.robots import RobotsHandler
@@ -180,14 +181,6 @@ class Worker:
         if self.client is None:
             raise RuntimeError("HTTP client is not initialized")
 
-        headers = {
-            "User-Agent": "JooyaCrawler/0.1 (+https://example.com)",
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9," "*/*;q=0.8"
-            ),
-            "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-        }
-
         try:
             resp = await self.client.get(
                 url,
@@ -200,7 +193,36 @@ class Worker:
                     "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
                 },
             )
-            return resp
+
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            body = resp.content or b""
+
+            if len(body) > MAX_DOWNLOAD_BYTES:
+                SKIPPED_LARGE_BODIES.labels(worker=worker_label).inc()
+                return FetchResult(
+                    status_code=resp.status_code,
+                    content="",
+                    content_type=content_type,
+                    skipped=True,
+                    skip_reason="body_too_large",
+                )
+
+            if "text/html" not in content_type:
+                SKIPPED_NON_HTML.labels(worker=worker_label).inc()
+                return FetchResult(
+                    status_code=resp.status_code,
+                    content="",
+                    content_type=content_type,
+                    skipped=True,
+                    skip_reason="non_html_content",
+                )
+
+            return FetchResult(
+                status_code=resp.status_code,
+                content=resp.text or "",
+                content_type=content_type,
+                skipped=False,
+            )
         finally:
             elapsed = time.perf_counter() - start
             REQUEST_LATENCY.labels(worker=worker_label).observe(elapsed)
