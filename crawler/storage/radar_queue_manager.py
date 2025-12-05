@@ -32,7 +32,7 @@ class RadarQueueManager:
         url = os.getenv("RADAR_DATABASE_URL") or os.getenv("DATABASE_URL")
         if not url:
             user = os.getenv("POSTGRES_USER", "jooya")
-            password = os.getenv("POSTGRES_PASSWORD", "SuperSecurePass123")
+            password = os.getenv("POSTGRES_PASSWORD", "postgres")
             host = os.getenv("POSTGRES_HOST", "postgres")
             port = os.getenv("POSTGRES_PORT", "5432")
             db = os.getenv("POSTGRES_DB", "jooyacrawlerdb")
@@ -128,16 +128,25 @@ class RadarQueueManager:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                UPDATE urls_frontier
+                WITH current AS (
+                    SELECT id, COALESCE(fail_count, 0) AS fail_count
+                    FROM urls_frontier
+                    WHERE id = $5
+                    FOR UPDATE
+                )
+                UPDATE urls_frontier AS f
                 SET status = $1,
-                    fail_count = COALESCE(fail_count, 0) + 1,
+                    fail_count = current.fail_count + 1,
                     last_http_status = $2,
                     last_error_code = $3,
                     error_category = $4,
+                    scheduled_for = NOW() + make_interval(secs => LEAST(3600, POWER(2, current.fail_count + 1))),
+                    last_scheduled_at = NOW(),
                     updated_at = NOW()
-                WHERE id = $5
+                FROM current
+                WHERE f.id = current.id
                 """,
-                STATUS_FAILED,
+                STATUS_SCHEDULED,
                 status_code,
                 error_code,
                 error_category,
@@ -161,6 +170,8 @@ class RadarQueueManager:
                 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
                 ON CONFLICT (url, source_id)
                 DO UPDATE SET
+                    depth = LEAST(COALESCE(urls_frontier.depth, EXCLUDED.depth), EXCLUDED.depth),
+                    source_id = EXCLUDED.source_id,
                     priority = EXCLUDED.priority,
                     status = $5,
                     scheduled_for = EXCLUDED.scheduled_for,

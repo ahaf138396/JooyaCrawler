@@ -15,7 +15,7 @@ async def init_postgres() -> None:
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         user = os.getenv("POSTGRES_USER", "jooya")
-        password = os.getenv("POSTGRES_PASSWORD", "SuperSecurePass123")
+        password = os.getenv("POSTGRES_PASSWORD", "postgres")
         host = os.getenv("POSTGRES_HOST", "postgres")
         port = os.getenv("POSTGRES_PORT", "5432")
         db = os.getenv("POSTGRES_DB", "jooyacrawlerdb")

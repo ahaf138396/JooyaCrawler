@@ -21,6 +21,7 @@ from crawler.storage.models.outbound_link_model import OutboundLink
 from crawler.storage.models.page_metadata_model import PageMetadata
 from crawler.storage.models.crawl_error_log_model import CrawlErrorLog
 from crawler.storage.models.domain_crawl_policy_model import DomainCrawlPolicy
+from tortoise.transactions import in_transaction
 
 from crawler.monitoring.metrics_server import (
     REQUEST_COUNT,
@@ -57,27 +58,42 @@ class Worker:
     async def _respect_domain_policy(self, url: str) -> None:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
+        async with in_transaction() as conn:
+            policy = (
+                await DomainCrawlPolicy.filter(domain=domain)
+                .using_db(conn)
+                .select_for_update()
+                .first()
+            )
 
-        policy, _ = await DomainCrawlPolicy.get_or_create(
-            domain=domain,
-            defaults={
-                "min_delay_ms": 1000,
-                "last_crawled_at": None,
-                "crawled_today": 0,
-            },
-        )
+            now = datetime.now(timezone.utc)
 
-        now = datetime.now(timezone.utc)
+            if policy is None:
+                policy = await DomainCrawlPolicy.using_db(conn).create(
+                    domain=domain,
+                    min_delay_ms=1000,
+                    last_crawled_at=None,
+                    crawled_today=0,
+                )
 
-        if policy.last_crawled_at is not None:
-            delta_ms = (now - policy.last_crawled_at).total_seconds() * 1000
-            wait_ms = policy.min_delay_ms - delta_ms
-            if wait_ms > 0:
-                await asyncio.sleep(wait_ms / 1000)
+            last_crawled = policy.last_crawled_at
+            if last_crawled and last_crawled.tzinfo is None:
+                last_crawled = last_crawled.replace(tzinfo=timezone.utc)
 
-        policy.last_crawled_at = now
-        policy.crawled_today = (policy.crawled_today or 0) + 1
-        await policy.save()
+            if last_crawled is not None:
+                delta_ms = (now - last_crawled).total_seconds() * 1000
+                wait_ms = policy.min_delay_ms - delta_ms
+                if wait_ms > 0:
+                    await asyncio.sleep(wait_ms / 1000)
+
+                if last_crawled.date() != now.date():
+                    policy.crawled_today = 0
+            else:
+                policy.crawled_today = 0
+
+            policy.last_crawled_at = datetime.now(timezone.utc)
+            policy.crawled_today = (policy.crawled_today or 0) + 1
+            await policy.save(using_db=conn)
 
     # --------------------------
     #  HTTP fetch with metrics
@@ -258,13 +274,19 @@ class Worker:
             logger.error(f"[{self.name}] Error processing {url}: {e}")
             WORKER_FAILED.labels(worker_id=worker_label).inc()
 
+            safe_status_code = status_code if status_code is not None else 0
+
             await CrawlErrorLog.create(
                 url=url,
-                status_code=status_code,
+                status_code=safe_status_code,
                 error_message=str(e),
                 worker_id=self.worker_id,
             )
-            await self.queue.mark_failed(task.id, status_code=status_code, error_code=str(e))
+            await self.queue.mark_failed(
+                task.id,
+                status_code=safe_status_code,
+                error_code=str(e),
+            )
 
     # --------------------------
     #  Worker loop

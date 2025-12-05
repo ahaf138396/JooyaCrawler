@@ -87,7 +87,6 @@ JooyaCrawler/
 ├── crawler/
 │   ├── main.py
 │   ├── worker.py
-│   ├── scheduler.py
 │   ├── parsing/
 │   │   └── html_extractor.py
 │   ├── storage/
@@ -132,7 +131,7 @@ pip install -r requirements.txt
 
 ```
 POSTGRES_USER=jooya
-POSTGRES_PASSWORD=SuperSecurePass123
+POSTGRES_PASSWORD=change_me
 POSTGRES_DB=jooyadb
 ```
 
