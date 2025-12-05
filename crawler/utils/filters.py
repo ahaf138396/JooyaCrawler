@@ -15,7 +15,13 @@ def is_valid_link(base_domain: str, url: str) -> bool:
         return False
 
     # فایل‌ها و منابع استاتیک
-    if any(parsed.path.lower().endswith(ext) for ext in BLOCKED_EXTENSIONS):
+    combined_path = parsed.path
+    if parsed.query:
+        combined_path = f"{combined_path}?{parsed.query}"
+
+    combined_path = combined_path.lower()
+
+    if any(re.search(re.escape(ext) + r"(?:$|[?#&])", combined_path) for ext in BLOCKED_EXTENSIONS):
         return False
 
     # لینک‌های خالی یا بی‌دامنه
@@ -27,6 +33,7 @@ def is_valid_link(base_domain: str, url: str) -> bool:
         return False
 
     # فقط لینک‌های داخلی (دامنه مشابه)
+    # توجه: زیر دامنه‌ها عمداً به عنوان داخلی محسوب نمی‌شوند
     if get_domain(url) != base_domain:
         return False
 

@@ -16,3 +16,8 @@ class CrawlErrorLog(models.Model):
     class Meta:
         table = "crawl_error_logs"
         indexes = ("url", "timestamp")
+
+    async def save(self, *args, **kwargs):  # type: ignore[override]
+        if self.error_message and len(self.error_message) > 512:
+            self.error_message = self.error_message[:512]
+        await super().save(*args, **kwargs)
