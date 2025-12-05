@@ -389,6 +389,8 @@ class Worker:
 
                 # ذخیره OutboundLink و صف کردن لینک‌های جدید
                 links_to_queue = unique_links[:max_links_to_queue]
+                skipped_due_to_depth = 0
+                next_depth = task.depth + 1
                 for link in links_to_queue:
                     parsed = urlparse(link)
                     is_internal = parsed.netloc.lower() == base_domain
@@ -399,16 +401,25 @@ class Worker:
                         is_internal=is_internal,
                     )
 
+                    if (
+                        self.queue.max_depth is not None
+                        and next_depth > self.queue.max_depth
+                    ):
+                        skipped_due_to_depth += 1
+                        SKIPPED_LINKS.labels(reason="max_depth").inc()
+                        continue
+
                     await self.queue.enqueue_url(
                         link,
                         source_id=task.source_id,
-                        depth=task.depth + 1,
+                        depth=next_depth,
                         priority=task.priority,
                     )
 
                 logger.info(
                     f"[{self.name}] Found {link_count} links from {url} "
-                    f"(queued up to {len(links_to_queue)})"
+                    f"(queued {len(links_to_queue) - skipped_due_to_depth} "
+                    f"/ skipped {skipped_due_to_depth} due to depth limit)"
                 )
 
             # Metrics

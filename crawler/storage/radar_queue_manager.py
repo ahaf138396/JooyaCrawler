@@ -29,7 +29,7 @@ class FrontierTask:
 class RadarQueueManager:
     """Interact with the Radar frontier tables via asyncpg."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_depth: Optional[int] = None) -> None:
         load_environment()
         url = os.getenv("RADAR_DATABASE_URL") or os.getenv("DATABASE_URL")
         if not url:
@@ -42,6 +42,16 @@ class RadarQueueManager:
 
         self.database_url = to_postgres_dsn(url)
         self.pool: Optional[asyncpg.Pool] = None
+        raw_max_depth = os.getenv("MAX_DEPTH")
+        try:
+            self.max_depth: Optional[int] = max_depth if max_depth is not None else (
+                int(raw_max_depth) if raw_max_depth else None
+            )
+        except ValueError:
+            logger.warning(
+                f"Invalid MAX_DEPTH value '{raw_max_depth}', disabling depth limit."
+            )
+            self.max_depth = None
 
     async def connect(self) -> None:
         if self.pool is None:
@@ -164,6 +174,14 @@ class RadarQueueManager:
         priority: int = 0,
     ) -> None:
         if not self.pool:
+            return
+        if self.max_depth is not None and depth > self.max_depth:
+            logger.info(
+                "Skipping enqueue for {url} at depth {depth} (max_depth={max_depth})",
+                url=url,
+                depth=depth,
+                max_depth=self.max_depth,
+            )
             return
         async with self.pool.acquire() as conn:
             await conn.execute(

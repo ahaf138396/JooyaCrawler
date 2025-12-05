@@ -72,6 +72,13 @@ REQUEST_LATENCY = Histogram(
     ["worker"]
 )
 
+# لینک‌هایی که قبل از اضافه شدن به صف رد شدند
+SKIPPED_LINKS = Counter(
+    "jooya_skipped_links_total",
+    "Links skipped before enqueueing",
+    ["reason"],
+)
+
 # -------------------------
 # Queue Metrics
 # -------------------------

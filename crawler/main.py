@@ -52,7 +52,18 @@ async def main() -> None:
 
     # ---- PostgreSQL ----
     await init_postgres()
-    queue = RadarQueueManager()
+    max_depth_env = os.getenv("MAX_DEPTH")
+    max_depth = None
+    if max_depth_env:
+        try:
+            max_depth = int(max_depth_env)
+            logger.info(f"Max crawl depth set to {max_depth}")
+        except ValueError:
+            logger.warning(
+                f"Ignoring invalid MAX_DEPTH value '{max_depth_env}'; proceeding without limit."
+            )
+
+    queue = RadarQueueManager(max_depth=max_depth)
     await queue.connect()
 
     # ---- MongoDB ----
