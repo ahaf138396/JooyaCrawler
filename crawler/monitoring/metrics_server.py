@@ -48,6 +48,18 @@ FAILED_REQUESTS = Counter(
     ["worker"]
 )
 
+SKIPPED_NON_HTML = Counter(
+    "jooya_skipped_non_html_total",
+    "Skipped responses because of non-HTML content types",
+    ["worker"],
+)
+
+SKIPPED_LARGE_BODIES = Counter(
+    "jooya_skipped_large_bodies_total",
+    "Skipped responses because body exceeds configured limit",
+    ["worker"],
+)
+
 CRAWLED_PAGES = Counter(
     "jooya_crawled_pages_total",
     "Successfully crawled pages",
