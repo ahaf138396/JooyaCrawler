@@ -14,6 +14,8 @@ class DomainCrawlPolicy(models.Model):
 
     last_crawled_at = fields.DatetimeField(null=True)
 
+    next_allowed_at = fields.DatetimeField(null=True)
+
     daily_limit = fields.IntField(default=10000)
     crawled_today = fields.IntField(default=0)
 
