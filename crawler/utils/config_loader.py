@@ -5,6 +5,8 @@ from httpx import Timeout
 
 from pydantic_settings import BaseSettings
 
+from crawler.utils.env_loader import load_environment
+
 class Config(BaseSettings):
     redis_url: str
     postgres_url: str
@@ -14,12 +16,13 @@ class Config(BaseSettings):
     request_timeout: int = 10
 
     class Config:
-        env_file = "./env/crawler.env"
+        env_file = ".env"
         extra = "ignore"
 
     log_level: str = "INFO"
 
 def load_config() -> Config:
+    load_environment()
     # خواندن از environment
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     postgres_url = os.getenv("POSTGRES_URL", "postgresql://localhost:5432/db")

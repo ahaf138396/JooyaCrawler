@@ -8,6 +8,7 @@ import asyncpg
 from loguru import logger
 
 from crawler.utils.db_utils import to_postgres_dsn
+from crawler.utils.env_loader import load_environment
 
 
 STATUS_SCHEDULED = "SCHEDULED"
@@ -29,6 +30,7 @@ class RadarQueueManager:
     """Interact with the Radar frontier tables via asyncpg."""
 
     def __init__(self) -> None:
+        load_environment()
         url = os.getenv("RADAR_DATABASE_URL") or os.getenv("DATABASE_URL")
         if not url:
             user = os.getenv("POSTGRES_USER", "jooya")

@@ -3,12 +3,14 @@ from loguru import logger
 from tortoise import Tortoise
 
 from crawler.utils.db_utils import to_asyncpg_dsn
+from crawler.utils.env_loader import load_environment
 
 
 async def init_postgres() -> None:
     """
     اتصال به PostgreSQL و ساخت/بررسی جداول.
     """
+    load_environment()
     # Radar uses `DATABASE_URL` (e.g. postgresql+psycopg2://...). Support it
     # alongside the legacy POSTGRES_* environment variables used previously in
     # the crawler so that both services can share the same database.
