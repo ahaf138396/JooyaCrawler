@@ -31,7 +31,10 @@ from crawler.monitoring.metrics_server import (
     WORKER_PROCESSED,
     WORKER_FAILED,
     WORKER_ACTIVE,
+    ROBOTS_SKIPPED,
 )
+from crawler.utils.config_loader import get_crawler_user_agent
+from crawler.utils.robots import RobotsHandler
 
 
 MAX_PARSE_BYTES = 500_000
@@ -51,6 +54,8 @@ class Worker:
         self.worker_id = worker_id
         self.name = f"Worker-{worker_id}"
         self.client: Optional[httpx.AsyncClient] = None
+        self.user_agent = get_crawler_user_agent()
+        self.robots_handler: Optional[RobotsHandler] = None
 
     # --------------------------
     #  Domain crawl policy
@@ -164,7 +169,7 @@ class Worker:
             resp = await self.client.get(
                 url,
                 headers={
-                    "User-Agent": "JooyaCrawler/0.1 (+https://example.com)",
+                    "User-Agent": self.user_agent,
                     "Accept": (
                         "text/html,application/xhtml+xml,application/xml;q=0.9,"
                         "*/*;q=0.8"
@@ -196,6 +201,16 @@ class Worker:
         status_code: Optional[int] = None
 
         try:
+
+            if self.robots_handler is not None:
+                allowed = await self.robots_handler.is_allowed(url)
+                if not allowed:
+                    ROBOTS_SKIPPED.labels(worker=worker_label).inc()
+                    logger.info(
+                        f"[{self.name}] Skipping disallowed by robots.txt for agent {self.user_agent}: {url}"
+                    )
+                    await self.queue.mark_done(task.id, None)
+                    return
 
             await self._respect_domain_policy(url)
 
@@ -364,6 +379,7 @@ class Worker:
                     follow_redirects=True,
             ) as client:
                 self.client = client
+                self.robots_handler = RobotsHandler(client, self.user_agent)
 
                 while True:
                     task = await self.queue.dequeue_task()
@@ -375,5 +391,6 @@ class Worker:
                     await self.process_url(task)
         finally:
             self.client = None
+            self.robots_handler = None
             WORKER_ACTIVE.labels(worker_id=worker_label).set(0.0)
 

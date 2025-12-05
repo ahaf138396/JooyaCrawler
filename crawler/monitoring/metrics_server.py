@@ -60,6 +60,12 @@ REQUEST_LATENCY = Histogram(
     ["worker"]
 )
 
+ROBOTS_SKIPPED = Counter(
+    "jooya_robots_skipped_total",
+    "URLs skipped due to robots.txt disallow rules",
+    ["worker"]
+)
+
 # -------------------------
 # Queue Metrics
 # -------------------------
