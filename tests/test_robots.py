@@ -40,3 +40,12 @@ async def test_robots_cache_used_for_multiple_urls():
 
     # robots.txt fetched only once due to caching
     assert client.calls == 1
+
+
+@pytest.mark.anyio
+async def test_robots_missing_or_server_error_defaults_to_allow():
+    client = MockClient([MockResponse(503, ""), MockResponse(404, "")])
+    handler = RobotsHandler(client, "TestBot")
+
+    assert await handler.is_allowed("https://example.com/page1")
+    assert await handler.is_allowed("https://example.com/page2")

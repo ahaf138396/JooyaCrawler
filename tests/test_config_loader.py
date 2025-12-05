@@ -17,3 +17,9 @@ def test_get_crawler_user_agent_prefers_environment(monkeypatch):
     monkeypatch.setenv("CRAWLER_USER_AGENT", "CustomBot/2.0")
 
     assert get_crawler_user_agent() == "CustomBot/2.0"
+
+
+def test_get_crawler_user_agent_falls_back_to_config_file(monkeypatch):
+    monkeypatch.delenv("CRAWLER_USER_AGENT", raising=False)
+
+    assert get_crawler_user_agent() == "JooyaBot/1.0"
