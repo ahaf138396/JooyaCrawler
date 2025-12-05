@@ -58,3 +58,18 @@ def extract_links(base_url: str, html: str) -> list[str]:
         return links
     except Exception:
         return []
+
+
+def extract_canonical_url(base_url: str, html: str) -> str:
+    """
+    Extract canonical URL from <link rel="canonical"> tag.
+    Returns absolute URL or empty string.
+    """
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        link_tag = soup.find("link", rel=lambda r: r and "canonical" in r.lower())
+        if link_tag and link_tag.get("href"):
+            return urljoin(base_url, link_tag.get("href").strip())
+    except Exception:
+        return ""
+    return ""
