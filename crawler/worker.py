@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
@@ -32,14 +34,26 @@ from crawler.monitoring.metrics_server import (
     WORKER_FAILED,
     WORKER_ACTIVE,
     ROBOTS_SKIPPED,
+    SKIPPED_NON_HTML,
+    SKIPPED_LARGE_BODIES,
 )
 from crawler.utils.config_loader import get_crawler_user_agent
 from crawler.utils.robots import RobotsHandler
 
 
 MAX_PARSE_BYTES = 500_000
+MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_DOWNLOAD_BYTES", 2_000_000))
 MAX_LINKS_PER_PAGE = 1000
 MAX_LINKS_HEAVY_PAGE = 200
+
+
+@dataclass
+class FetchResult:
+    status_code: int
+    content: str
+    content_type: str
+    skipped: bool
+    skip_reason: Optional[str] = None
 
 
 class Worker:
@@ -158,13 +172,22 @@ class Worker:
     # --------------------------
     #  HTTP fetch with metrics
     # --------------------------
-    async def _fetch(self, url: str) -> httpx.Response:
+    async def _fetch(self, url: str) -> FetchResult:
         worker_label = str(self.worker_id)
         REQUEST_COUNT.labels(worker=worker_label).inc()
 
         start = time.perf_counter()
         if self.client is None:
             raise RuntimeError("HTTP client is not initialized")
+
+        headers = {
+            "User-Agent": "JooyaCrawler/0.1 (+https://example.com)",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9," "*/*;q=0.8"
+            ),
+            "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+
         try:
             resp = await self.client.get(
                 url,
@@ -214,10 +237,18 @@ class Worker:
 
             await self._respect_domain_policy(url)
 
-            response = await self._fetch(url)
+            fetch_result = await self._fetch(url)
 
-            status_code = response.status_code
-            html = response.text or ""
+            status_code = fetch_result.status_code
+
+            if fetch_result.skipped:
+                await self.queue.mark_done(task.id, status_code)
+                logger.info(
+                    f"[{self.name}] Skipped {url} ({fetch_result.skip_reason or 'unknown reason'})"
+                )
+                return
+
+            html = fetch_result.content or ""
 
             parse_source = html
             heavy_page = len(html) > MAX_PARSE_BYTES
@@ -312,6 +343,8 @@ class Worker:
 
                 # ذخیره OutboundLink و صف کردن لینک‌های جدید
                 links_to_queue = unique_links[:max_links_to_queue]
+                skipped_due_to_depth = 0
+                next_depth = task.depth + 1
                 for link in links_to_queue:
                     parsed = urlparse(link)
                     is_internal = parsed.netloc.lower() == base_domain
@@ -322,16 +355,25 @@ class Worker:
                         is_internal=is_internal,
                     )
 
+                    if (
+                        self.queue.max_depth is not None
+                        and next_depth > self.queue.max_depth
+                    ):
+                        skipped_due_to_depth += 1
+                        SKIPPED_LINKS.labels(reason="max_depth").inc()
+                        continue
+
                     await self.queue.enqueue_url(
                         link,
                         source_id=task.source_id,
-                        depth=task.depth + 1,
+                        depth=next_depth,
                         priority=task.priority,
                     )
 
                 logger.info(
                     f"[{self.name}] Found {link_count} links from {url} "
-                    f"(queued up to {len(links_to_queue)})"
+                    f"(queued {len(links_to_queue) - skipped_due_to_depth} "
+                    f"/ skipped {skipped_due_to_depth} due to depth limit)"
                 )
 
             # Metrics
