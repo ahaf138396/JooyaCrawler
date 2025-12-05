@@ -93,3 +93,5 @@ async def start_metrics_server(port=8000):
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+
+    return runner, site

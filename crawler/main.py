@@ -47,6 +47,9 @@ async def main() -> None:
 
     load_environment()
 
+    metrics_runner = None
+    metrics_site = None
+
     # ---- PostgreSQL ----
     await init_postgres()
     queue = RadarQueueManager()
@@ -66,7 +69,7 @@ async def main() -> None:
     worker_tasks = [asyncio.create_task(Worker(queue, mongo, i).run()) for i in range(WORKER_COUNT)]
 
     # ---- Metrics Server ----
-    await start_metrics_server(port=8000)
+    metrics_runner, metrics_site = await start_metrics_server(port=8000)
 
     # ---- Queue Metric Monitor ----
     monitor_task = asyncio.create_task(monitor_queue_size(queue))
@@ -88,6 +91,10 @@ async def main() -> None:
             task.cancel()
 
         await asyncio.gather(monitor_task, *worker_tasks, return_exceptions=True)
+
+        if metrics_runner is not None:
+            await metrics_runner.shutdown()
+            await metrics_runner.cleanup()
 
         await queue.close()
         await mongo.close()
