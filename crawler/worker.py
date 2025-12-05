@@ -82,97 +82,69 @@ class Worker:
     async def _respect_domain_policy(self, url: str) -> None:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
-        # Initial read without locking to calculate any wait time before acquiring locks
-        while True:
-            initial_policy = await DomainCrawlPolicy.filter(domain=domain).first()
-            now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
 
-            wait_ms = 0
-            if initial_policy:
-                last_crawled = initial_policy.last_crawled_at
-                next_allowed = initial_policy.next_allowed_at
+        async with in_transaction() as conn:
+            policy = (
+                await DomainCrawlPolicy.filter(domain=domain)
+                .using_db(conn)
+                .select_for_update()
+                .first()
+            )
 
-                if next_allowed and next_allowed.tzinfo is None:
-                    next_allowed = next_allowed.replace(tzinfo=timezone.utc)
-                if last_crawled and last_crawled.tzinfo is None:
-                    last_crawled = last_crawled.replace(tzinfo=timezone.utc)
-
-                if next_allowed:
-                    wait_ms = max(wait_ms, (next_allowed - now).total_seconds() * 1000)
-                if last_crawled:
-                    delta_ms = (now - last_crawled).total_seconds() * 1000
-                    wait_ms = max(wait_ms, initial_policy.min_delay_ms - delta_ms)
-
-            if wait_ms > 0:
-                await asyncio.sleep(wait_ms / 1000)
-
-            async with in_transaction() as conn:
-                policy = (
-                    await DomainCrawlPolicy.filter(domain=domain)
-                    .using_db(conn)
-                    .select_for_update()
-                    .first()
+            if policy is None:
+                policy = await DomainCrawlPolicy.using_db(conn).create(
+                    domain=domain,
+                    min_delay_ms=self.default_min_delay_ms,
+                    last_crawled_at=None,
+                    next_allowed_at=None,
+                    crawled_today=0,
                 )
 
-                now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
+            last_crawled = policy.last_crawled_at
+            next_allowed = policy.next_allowed_at
 
-                if policy is None:
-                    policy = await DomainCrawlPolicy.using_db(conn).create(
-                        domain=domain,
-                        min_delay_ms=self.default_min_delay_ms,
-                        last_crawled_at=None,
-                        next_allowed_at=None,
-                        crawled_today=0,
-                    )
+            if last_crawled and last_crawled.tzinfo is None:
+                last_crawled = last_crawled.replace(tzinfo=timezone.utc)
+            if next_allowed and next_allowed.tzinfo is None:
+                next_allowed = next_allowed.replace(tzinfo=timezone.utc)
 
-                last_crawled = policy.last_crawled_at
-                next_allowed = policy.next_allowed_at
-                if last_crawled and last_crawled.tzinfo is None:
-                    last_crawled = last_crawled.replace(tzinfo=timezone.utc)
-                if next_allowed and next_allowed.tzinfo is None:
-                    next_allowed = next_allowed.replace(tzinfo=timezone.utc)
+            if last_crawled is None or last_crawled.date() != now.date():
+                policy.crawled_today = 0
 
-                wait_ms_locked = 0
-                if next_allowed and now < next_allowed:
-                    wait_ms_locked = max(
-                        wait_ms_locked, (next_allowed - now).total_seconds() * 1000
-                    )
+            min_delay_wait = 0
+            if last_crawled:
+                delta_ms = (now - last_crawled).total_seconds() * 1000
+                min_delay_wait = max(0, policy.min_delay_ms - delta_ms)
 
-                if last_crawled is not None:
-                    delta_ms = (now - last_crawled).total_seconds() * 1000
-                    wait_ms_locked = max(wait_ms_locked, policy.min_delay_ms - delta_ms)
-                    if last_crawled.date() != now.date():
-                        policy.crawled_today = 0
-                else:
-                    policy.crawled_today = 0
+            next_allowed_wait = 0
+            if next_allowed:
+                next_allowed_wait = max(0, (next_allowed - now).total_seconds() * 1000)
 
-                if policy.crawled_today >= policy.daily_limit:
-                    next_allowed_time = datetime.combine(
-                        now.date() + timedelta(days=1),
-                        datetime.min.time(),
-                        tzinfo=timezone.utc,
-                    )
-                    policy.next_allowed_at = next_allowed_time
-                    wait_ms_locked = max(
-                        wait_ms_locked,
-                        (next_allowed_time - now).total_seconds() * 1000,
-                    )
-                    await policy.save(using_db=conn)
-                elif wait_ms_locked > 0:
-                    # Persist state changes (e.g., daily reset) before waiting
-                    policy.next_allowed_at = None
-                    await policy.save(using_db=conn)
-                else:
-                    policy.last_crawled_at = now
-                    policy.next_allowed_at = None
-                    policy.crawled_today = (policy.crawled_today or 0) + 1
-                    await policy.save(using_db=conn)
-                    return
+            wait_ms = max(min_delay_wait, next_allowed_wait)
 
-            if wait_ms_locked > 0:
-                await asyncio.sleep(wait_ms_locked / 1000)
+            if policy.crawled_today >= policy.daily_limit:
+                next_allowed_time = datetime.combine(
+                    now.date() + timedelta(days=1),
+                    datetime.min.time(),
+                    tzinfo=timezone.utc,
+                )
+                wait_ms = max(wait_ms, (next_allowed_time - now).total_seconds() * 1000)
+                policy.next_allowed_at = next_allowed_time
+            elif wait_ms > 0:
+                policy.next_allowed_at = now + timedelta(milliseconds=wait_ms)
             else:
-                return
+                policy.next_allowed_at = None
+
+            if wait_ms <= 0:
+                policy.last_crawled_at = now
+                policy.crawled_today = (policy.crawled_today or 0) + 1
+
+            await policy.save(using_db=conn)
+
+        if wait_ms > 0:
+            await asyncio.sleep(wait_ms / 1000)
 
     # --------------------------
     #  HTTP fetch with metrics
