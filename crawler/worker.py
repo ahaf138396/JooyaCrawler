@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
@@ -31,13 +33,24 @@ from crawler.monitoring.metrics_server import (
     WORKER_PROCESSED,
     WORKER_FAILED,
     WORKER_ACTIVE,
-    SKIPPED_LINKS,
+    SKIPPED_NON_HTML,
+    SKIPPED_LARGE_BODIES,
 )
 
 
 MAX_PARSE_BYTES = 500_000
+MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_DOWNLOAD_BYTES", 2_000_000))
 MAX_LINKS_PER_PAGE = 1000
 MAX_LINKS_HEAVY_PAGE = 200
+
+
+@dataclass
+class FetchResult:
+    status_code: int
+    content: str
+    content_type: str
+    skipped: bool
+    skip_reason: Optional[str] = None
 
 
 class Worker:
@@ -154,26 +167,96 @@ class Worker:
     # --------------------------
     #  HTTP fetch with metrics
     # --------------------------
-    async def _fetch(self, url: str) -> httpx.Response:
+    async def _fetch(self, url: str) -> FetchResult:
         worker_label = str(self.worker_id)
         REQUEST_COUNT.labels(worker=worker_label).inc()
 
         start = time.perf_counter()
         if self.client is None:
             raise RuntimeError("HTTP client is not initialized")
+
+        headers = {
+            "User-Agent": "JooyaCrawler/0.1 (+https://example.com)",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9," "*/*;q=0.8"
+            ),
+            "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+
         try:
-            resp = await self.client.get(
-                url,
-                headers={
-                    "User-Agent": "JooyaCrawler/0.1 (+https://example.com)",
-                    "Accept": (
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                        "*/*;q=0.8"
-                    ),
-                    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-                },
-            )
-            return resp
+            async with self.client.stream("GET", url, headers=headers) as resp:
+                content_type_header = (resp.headers.get("content-type") or "").lower()
+                content_type = content_type_header.split(";")[0].strip()
+
+                content_length_header = resp.headers.get("content-length")
+                content_length = None
+                if content_length_header:
+                    try:
+                        content_length = int(content_length_header)
+                    except ValueError:
+                        logger.debug(
+                            f"[{self.name}] Invalid content-length header: {content_length_header}"
+                        )
+
+                if content_length is not None and content_length > MAX_DOWNLOAD_BYTES:
+                    SKIPPED_LARGE_BODIES.labels(worker=worker_label).inc()
+                    logger.warning(
+                        f"[{self.name}] Skipping {url} due to content-length={content_length} "
+                        f"> limit {MAX_DOWNLOAD_BYTES}"
+                    )
+                    return FetchResult(
+                        status_code=resp.status_code,
+                        content="",
+                        content_type=content_type,
+                        skipped=True,
+                        skip_reason="body-too-large",
+                    )
+
+                if content_type and content_type not in (
+                    "text/html",
+                    "application/xhtml+xml",
+                ):
+                    SKIPPED_NON_HTML.labels(worker=worker_label).inc()
+                    logger.info(
+                        f"[{self.name}] Skipping {url} due to non-HTML content-type: {content_type}"
+                    )
+                    return FetchResult(
+                        status_code=resp.status_code,
+                        content="",
+                        content_type=content_type,
+                        skipped=True,
+                        skip_reason="non-html-content-type",
+                    )
+
+                collected: list[bytes] = []
+                total_bytes = 0
+                async for chunk in resp.aiter_bytes():
+                    if not chunk:
+                        continue
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_DOWNLOAD_BYTES:
+                        SKIPPED_LARGE_BODIES.labels(worker=worker_label).inc()
+                        logger.warning(
+                            f"[{self.name}] Aborting download for {url}; body exceeded {MAX_DOWNLOAD_BYTES} bytes"
+                        )
+                        return FetchResult(
+                            status_code=resp.status_code,
+                            content="",
+                            content_type=content_type,
+                            skipped=True,
+                            skip_reason="body-too-large",
+                        )
+                    collected.append(chunk)
+
+                encoding = resp.encoding or "utf-8"
+                html = b"".join(collected).decode(encoding, errors="ignore")
+
+                return FetchResult(
+                    status_code=resp.status_code,
+                    content=html,
+                    content_type=content_type,
+                    skipped=False,
+                )
         finally:
             elapsed = time.perf_counter() - start
             REQUEST_LATENCY.labels(worker=worker_label).observe(elapsed)
@@ -200,10 +283,18 @@ class Worker:
 
             await self._respect_domain_policy(url)
 
-            response = await self._fetch(url)
+            fetch_result = await self._fetch(url)
 
-            status_code = response.status_code
-            html = response.text or ""
+            status_code = fetch_result.status_code
+
+            if fetch_result.skipped:
+                await self.queue.mark_done(task.id, status_code)
+                logger.info(
+                    f"[{self.name}] Skipped {url} ({fetch_result.skip_reason or 'unknown reason'})"
+                )
+                return
+
+            html = fetch_result.content or ""
 
             parse_source = html
             heavy_page = len(html) > MAX_PARSE_BYTES
