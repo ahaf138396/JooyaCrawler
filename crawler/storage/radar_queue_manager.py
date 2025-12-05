@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
 
 import asyncpg
 from loguru import logger
@@ -72,15 +72,23 @@ class RadarQueueManager:
 
     async def connect(self) -> None:
         if self.pool is None:
-            self.pool = await asyncpg.create_pool(self.database_url, min_size=1, max_size=10)
-            logger.info("Connected to Radar frontier database")
+            try:
+                self.pool = await asyncpg.create_pool(
+                    self.database_url, min_size=1, max_size=10
+                )
+                logger.info("Connected to Radar frontier database")
 
-            if self.max_pages is not None:
-                async with self.pool.acquire() as conn:
-                    self.crawled_count = await conn.fetchval(
-                        "SELECT count(*) FROM urls_frontier WHERE status = $1",
-                        STATUS_DONE,
-                    )
+                if self.max_pages is not None:
+                    async with self.pool.acquire() as conn:
+                        self.crawled_count = await conn.fetchval(
+                            "SELECT count(*) FROM urls_frontier WHERE status = $1",
+                            STATUS_DONE,
+                        )
+            except Exception:
+                logger.exception("Failed to connect to Radar frontier database")
+                if self.pool:
+                    await self.pool.close()
+                self.pool = None
 
     async def close(self) -> None:
         if self.pool:
@@ -105,6 +113,14 @@ class RadarQueueManager:
         if self.has_reached_max_pages():
             return None
         async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE urls_frontier
+                SET scheduled_for = NOW() + INTERVAL '1800 seconds'
+                WHERE status = $1 AND scheduled_for > NOW() + INTERVAL '1800 seconds'
+                """,
+                STATUS_SCHEDULED,
+            )
             row = await conn.fetchrow(
                 """
                 WITH next_task AS (
@@ -139,21 +155,29 @@ class RadarQueueManager:
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
-            await conn.execute(
+            previous_status = await conn.fetchval(
                 """
-                UPDATE urls_frontier
+                WITH previous AS (
+                    SELECT id, status AS previous_status
+                    FROM urls_frontier
+                    WHERE id = $3
+                    FOR UPDATE
+                )
+                UPDATE urls_frontier AS f
                 SET status = $1,
                     fail_count = 0,
                     last_http_status = $2,
                     updated_at = NOW()
-                WHERE id = $3
+                FROM previous
+                WHERE f.id = previous.id
+                RETURNING previous.previous_status
                 """,
                 STATUS_DONE,
                 status_code,
                 task_id,
             )
 
-            if self.max_pages is not None:
+            if self.max_pages is not None and previous_status != STATUS_DONE:
                 self.crawled_count += 1
 
     async def mark_failed(
@@ -175,17 +199,23 @@ class RadarQueueManager:
                     WHERE id = $5
                     FOR UPDATE
                 )
+                , computed AS (
+                    SELECT id,
+                        fail_count,
+                        LEAST(1800, 30 * POWER(2, fail_count + 1)) AS delay_secs
+                    FROM current
+                )
                 UPDATE urls_frontier AS f
                 SET status = $1,
-                    fail_count = current.fail_count + 1,
+                    fail_count = computed.fail_count + 1,
                     last_http_status = $2,
                     last_error_code = $3,
                     error_category = $4,
-                    scheduled_for = NOW() + make_interval(secs => LEAST(3600, POWER(2, current.fail_count + 1))),
+                    scheduled_for = NOW() + make_interval(secs => computed.delay_secs),
                     last_scheduled_at = NOW(),
                     updated_at = NOW()
-                FROM current
-                WHERE f.id = current.id
+                FROM computed
+                WHERE f.id = computed.id
                 """,
                 STATUS_SCHEDULED,
                 status_code,
@@ -201,6 +231,7 @@ class RadarQueueManager:
         source_id: int,
         depth: int,
         priority: int = 0,
+        force_recrawl: bool = False,
     ) -> None:
         if not self.pool:
             return
@@ -228,10 +259,10 @@ class RadarQueueManager:
                 DO UPDATE SET
                     depth = LEAST(COALESCE(urls_frontier.depth, EXCLUDED.depth), EXCLUDED.depth),
                     source_id = EXCLUDED.source_id,
-                    priority = EXCLUDED.priority,
-                    status = $5,
-                    scheduled_for = EXCLUDED.scheduled_for,
-                    last_scheduled_at = EXCLUDED.last_scheduled_at,
+                    priority = GREATEST(COALESCE(urls_frontier.priority, EXCLUDED.priority), EXCLUDED.priority),
+                    status = CASE WHEN urls_frontier.status = $6 AND NOT $7 THEN urls_frontier.status ELSE EXCLUDED.status END,
+                    scheduled_for = CASE WHEN urls_frontier.status = $6 AND NOT $7 THEN urls_frontier.scheduled_for ELSE EXCLUDED.scheduled_for END,
+                    last_scheduled_at = CASE WHEN urls_frontier.status = $6 AND NOT $7 THEN urls_frontier.last_scheduled_at ELSE EXCLUDED.last_scheduled_at END,
                     updated_at = NOW()
                 """,
                 url,
@@ -239,6 +270,68 @@ class RadarQueueManager:
                 depth,
                 priority,
                 STATUS_SCHEDULED,
+                STATUS_DONE,
+                force_recrawl,
+            )
+
+    async def enqueue_many(
+        self,
+        urls: Iterable[str],
+        *,
+        source_id: int,
+        depth: int,
+        priority: int = 0,
+        force_recrawl: bool = False,
+    ) -> None:
+        if not self.pool:
+            return
+        if self.max_depth is not None and depth > self.max_depth:
+            logger.info(
+                "Skipping bulk enqueue at depth {depth} (max_depth={max_depth})",
+                depth=depth,
+                max_depth=self.max_depth,
+            )
+            return
+        if self.has_reached_max_pages():
+            logger.info(
+                "Skipping bulk enqueue; max_pages limit reached ({max_pages})",
+                max_pages=self.max_pages,
+            )
+            return
+
+        payload = [u for u in urls if u]
+        if not payload:
+            return
+
+        sql = """
+            INSERT INTO urls_frontier (url, source_id, depth, priority, status, scheduled_for, last_scheduled_at)
+            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+            ON CONFLICT (url, source_id)
+            DO UPDATE SET
+                depth = LEAST(COALESCE(urls_frontier.depth, EXCLUDED.depth), EXCLUDED.depth),
+                source_id = EXCLUDED.source_id,
+                priority = GREATEST(COALESCE(urls_frontier.priority, EXCLUDED.priority), EXCLUDED.priority),
+                status = CASE WHEN urls_frontier.status = $6 AND NOT $7 THEN urls_frontier.status ELSE EXCLUDED.status END,
+                scheduled_for = CASE WHEN urls_frontier.status = $6 AND NOT $7 THEN urls_frontier.scheduled_for ELSE EXCLUDED.scheduled_for END,
+                last_scheduled_at = CASE WHEN urls_frontier.status = $6 AND NOT $7 THEN urls_frontier.last_scheduled_at ELSE EXCLUDED.last_scheduled_at END,
+                updated_at = NOW()
+        """
+
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                sql,
+                [
+                    (
+                        url,
+                        source_id,
+                        depth,
+                        priority,
+                        STATUS_SCHEDULED,
+                        STATUS_DONE,
+                        force_recrawl,
+                    )
+                    for url in payload
+                ],
             )
 
     def has_reached_max_pages(self) -> bool:
