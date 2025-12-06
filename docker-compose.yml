@@ -27,7 +27,7 @@ services:
 #      - backend_net
 
   crawler:
-    build: ghcr.io/ahaf138396/jooyacrawler:latest
+    image: ghcr.io/ahaf138396/jooyacrawler:latest
     container_name: jooya_crawler
     restart: unless-stopped
     depends_on:
