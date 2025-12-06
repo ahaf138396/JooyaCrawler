@@ -14,17 +14,17 @@ services:
     ports:
       - "5433:5432"
 
-  mongo:
-    image: mongo:7
-    container_name: jooya_mongo
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: strong_password_here
-    ports:
-      - "27017:27017"
-    networks:
-      - backend_net
+#  mongo:
+#    image: mongo:7
+#    container_name: jooya_mongo
+#    restart: unless-stopped
+#    environment:
+#      MONGO_INITDB_ROOT_USERNAME: admin
+#      MONGO_INITDB_ROOT_PASSWORD: strong_password_here
+#    ports:
+#     - "27017:27017"
+#    networks:
+#      - backend_net
 
   crawler:
     build: .
@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
-      - mongo
+     # - mongo
     environment:
       # -------------------- POSTGRES --------------------
       POSTGRES_HOST: postgres

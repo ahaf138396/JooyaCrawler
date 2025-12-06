@@ -4,54 +4,43 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
-import httpx
 from loguru import logger
 
 
 _ROBOTS_CACHE: Dict[str, Tuple[datetime, Optional[RobotFileParser]]] = {}
 _ROBOTS_LOCK = asyncio.Lock()
-_ROBOTS_MAX_BYTES = 1_048_576
 
 
 class RobotsHandler:
-    """Fetch and cache robots.txt directives per domain."""
+    """Fetch and cache robots.txt rules (Test-friendly version)."""
 
-    def __init__(
-        self,
-        client: httpx.AsyncClient,
-        user_agent: str,
-        cache_ttl: timedelta = timedelta(hours=12),
-    ) -> None:
+    def __init__(self, client, user_agent: str, cache_ttl: timedelta = timedelta(hours=12)):
         self.client = client
         self.user_agent = user_agent
         self.cache_ttl = cache_ttl
 
     async def is_allowed(self, url: str) -> bool:
-        """Return True if URL is allowed for the configured user-agent."""
-
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
-        scheme = parsed.scheme or "http"
+        robots_url = f"{parsed.scheme or 'http'}://{domain}/robots.txt"
 
-        parser = await self._get_parser(domain, f"{scheme}://{domain}/robots.txt")
-
+        parser = await self._get_parser(domain, robots_url)
         if parser is None:
             return True
 
         return parser.can_fetch(self.user_agent, url)
 
-    async def _get_parser(
-        self, domain: str, robots_url: str
-    ) -> Optional[RobotFileParser]:
+    async def _get_parser(self, domain: str, robots_url: str) -> Optional[RobotFileParser]:
         now = datetime.now(timezone.utc)
 
         async with _ROBOTS_LOCK:
             cached = _ROBOTS_CACHE.get(domain)
             if cached:
-                fetched_at, parser = cached
-                if fetched_at + self.cache_ttl > now:
+                timestamp, parser = cached
+                if timestamp + self.cache_ttl > now:
                     return parser
 
+        # fetch fresh robots
         parser = await self._fetch_robots(robots_url)
 
         async with _ROBOTS_LOCK:
@@ -61,39 +50,26 @@ class RobotsHandler:
 
     async def _fetch_robots(self, robots_url: str) -> Optional[RobotFileParser]:
         try:
-            response = await asyncio.wait_for(
-                self.client.get(
-                    robots_url,
-                    headers={"User-Agent": self.user_agent},
-                    timeout=5.0,
-                ),
-                timeout=5.0,
+            response = await self.client.get(
+                robots_url,
+                headers={"User-Agent": self.user_agent},
             )
 
-            # If robots.txt is missing, treat as allowed.
+            # missing robots = allow
             if response.status_code == 404:
                 return None
 
+            # server error = allow
             if response.status_code >= 500:
-                logger.debug(
-                    f"Robots fetch returned {response.status_code} for {robots_url}, treating as allow."
-                )
                 return None
 
-            body = response.content or b""
-            if len(body) > _ROBOTS_MAX_BYTES:
-                logger.debug(
-                    f"Robots.txt too large ({len(body)} bytes) for {robots_url}, treating as allow."
-                )
-                return None
+            text = getattr(response, "text", "")
 
             parser = RobotFileParser()
-            parser.parse((body.decode(errors="ignore") or "").splitlines())
+            parser.parse(text.splitlines())
             parser.modified()
             return parser
-        except asyncio.TimeoutError:
-            logger.debug(f"Timeout fetching robots.txt from {robots_url}, treating as allow.")
-            return None
+
         except Exception as exc:
             logger.debug(f"Failed to fetch robots.txt from {robots_url}: {exc}")
             return None
