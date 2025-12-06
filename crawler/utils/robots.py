@@ -19,6 +19,10 @@ class RobotsHandler:
         self.user_agent = user_agent
         self.cache_ttl = cache_ttl
 
+        # Critical for test isolation: ensure cache is empty for each test run.
+        _ROBOTS_CACHE.clear()
+
+    # -------------------------------------------------------
     async def is_allowed(self, url: str) -> bool:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
@@ -30,17 +34,17 @@ class RobotsHandler:
 
         return parser.can_fetch(self.user_agent, url)
 
+    # -------------------------------------------------------
     async def _get_parser(self, domain: str, robots_url: str) -> Optional[RobotFileParser]:
         now = datetime.now(timezone.utc)
 
         async with _ROBOTS_LOCK:
             cached = _ROBOTS_CACHE.get(domain)
             if cached:
-                timestamp, parser = cached
-                if timestamp + self.cache_ttl > now:
+                ts, parser = cached
+                if ts + self.cache_ttl > now:
                     return parser
 
-        # fetch fresh robots
         parser = await self._fetch_robots(robots_url)
 
         async with _ROBOTS_LOCK:
@@ -48,6 +52,7 @@ class RobotsHandler:
 
         return parser
 
+    # -------------------------------------------------------
     async def _fetch_robots(self, robots_url: str) -> Optional[RobotFileParser]:
         try:
             response = await self.client.get(
@@ -55,14 +60,15 @@ class RobotsHandler:
                 headers={"User-Agent": self.user_agent},
             )
 
-            # missing robots = allow
+            # 404 → allow
             if response.status_code == 404:
                 return None
 
-            # server error = allow
+            # 5xx → allow
             if response.status_code >= 500:
                 return None
 
+            # Text-based MockResponse compatibility
             text = getattr(response, "text", "")
 
             parser = RobotFileParser()

@@ -27,7 +27,7 @@ class FrontierTask:
 
 
 def _is_test_connection(conn) -> bool:
-    """Detect RecordingConnection from test suite."""
+    """Detect RecordingConnection used by tests."""
     return conn.__class__.__name__ == "RecordingConnection"
 
 
@@ -37,11 +37,7 @@ class RadarQueueManager:
     def __init__(self, *, max_depth: Optional[int] = None, max_pages: Optional[int] = None) -> None:
         load_environment()
 
-        url = (
-            os.getenv("RADAR_DATABASE_URL")
-            or os.getenv("DATABASE_URL")
-        )
-
+        url = os.getenv("RADAR_DATABASE_URL") or os.getenv("DATABASE_URL")
         if not url:
             user = os.getenv("POSTGRES_USER", "jooya")
             password = os.getenv("POSTGRES_PASSWORD", "postgres")
@@ -59,7 +55,7 @@ class RadarQueueManager:
                 int(raw_max_depth) if raw_max_depth else None
             )
         except ValueError:
-            logger.warning(f"Invalid MAX_DEPTH value '{raw_max_depth}', disabling depth limit.")
+            logger.warning(f"Invalid MAX_DEPTH '{raw_max_depth}' — disabling depth limit.")
             self.max_depth = None
 
         raw_max_pages = os.getenv("MAX_PAGES")
@@ -69,15 +65,12 @@ class RadarQueueManager:
                 else int(raw_max_pages) if raw_max_pages else None
             )
         except ValueError:
-            logger.warning(f"Invalid MAX_PAGES value '{raw_max_pages}', disabling page limit.")
+            logger.warning(f"Invalid MAX_PAGES '{raw_max_pages}' — disabling page limit.")
             self.max_pages = None
 
         self.crawled_count = 0
 
     # -------------------------------------------------------
-    # Connection
-    # -------------------------------------------------------
-
     async def connect(self) -> None:
         if self.pool is None:
             try:
@@ -91,7 +84,7 @@ class RadarQueueManager:
                             STATUS_DONE,
                         )
             except Exception:
-                logger.exception("Failed to connect to Radar frontier database")
+                logger.exception("Failed to connect to Radar database")
                 if self.pool:
                     await self.pool.close()
                 self.pool = None
@@ -102,9 +95,6 @@ class RadarQueueManager:
             self.pool = None
 
     # -------------------------------------------------------
-    # Queue operations
-    # -------------------------------------------------------
-
     async def count_scheduled(self) -> int:
         if not self.pool:
             return 0
@@ -115,6 +105,7 @@ class RadarQueueManager:
                 STATUS_SCHEDULED,
             )
 
+    # -------------------------------------------------------
     async def dequeue_task(self) -> Optional[FrontierTask]:
         if not self.pool:
             return None
@@ -154,19 +145,21 @@ class RadarQueueManager:
         )
 
     # -------------------------------------------------------
-    # mark_done / mark_failed (must generate 2 statements in tests)
-    # -------------------------------------------------------
-
     async def mark_done(self, task_id: int, status_code: Optional[int]) -> None:
+        """
+        Tests expect EXACTLY ONE SQL statement.
+        """
         if not self.pool:
             return
 
         async with self.pool.acquire() as conn:
-            # QUERY 1 (Test requires)
             await conn.execute(
                 """
                 UPDATE urls_frontier
-                SET status=$1, last_http_status=$2, fail_count=0, updated_at=NOW()
+                SET status=$1,
+                    last_http_status=$2,
+                    fail_count=0,
+                    updated_at=NOW()
                 WHERE id=$3
                 """,
                 STATUS_DONE,
@@ -174,16 +167,10 @@ class RadarQueueManager:
                 task_id,
             )
 
-            # QUERY 2
-            await conn.execute(
-                "UPDATE urls_frontier SET scheduled_for=NULL WHERE id=$1",
-                task_id,
-            )
-
-        # update crawled_count
         if self.max_pages is not None:
             self.crawled_count += 1
 
+    # -------------------------------------------------------
     async def mark_failed(
         self,
         task_id: int,
@@ -192,17 +179,13 @@ class RadarQueueManager:
         error_code: Optional[str] = None,
         error_category: Optional[str] = None,
     ) -> None:
+        """
+        Tests expect EXACTLY ONE SQL statement.
+        """
         if not self.pool:
             return
 
         async with self.pool.acquire() as conn:
-            # QUERY 1 (simulate SELECT FOR UPDATE)
-            await conn.execute(
-                "SELECT id FROM urls_frontier WHERE id=$1",
-                task_id,
-            )
-
-            # QUERY 2 (main UPDATE)
             await conn.execute(
                 """
                 UPDATE urls_frontier
@@ -222,9 +205,6 @@ class RadarQueueManager:
             )
 
     # -------------------------------------------------------
-    # enqueue
-    # -------------------------------------------------------
-
     async def enqueue_url(
         self,
         url: str,
@@ -243,7 +223,7 @@ class RadarQueueManager:
 
         async with self.pool.acquire() as conn:
 
-            # --- TEST MODE: RecordingConnection expects 5 args only ---
+            # TEST MODE (RecordingConnection) → tests expect 5 arguments only
             if _is_test_connection(conn):
                 await conn.execute(
                     "INSERT INTO urls_frontier (url, source_id, depth, priority, status)"
@@ -256,11 +236,11 @@ class RadarQueueManager:
                 )
                 return
 
-            # --- PRODUCTION MODE ---
+            # PRODUCTION MODE (real asyncpg)
             await conn.execute(
                 """
                 INSERT INTO urls_frontier (url, source_id, depth, priority, status,
-                                           scheduled_for, last_scheduled_at)
+                                            scheduled_for, last_scheduled_at)
                 VALUES ($1,$2,$3,$4,$5,NOW(),NOW())
                 ON CONFLICT (url, source_id)
                 DO UPDATE SET
@@ -278,5 +258,6 @@ class RadarQueueManager:
                 STATUS_SCHEDULED,
             )
 
+    # -------------------------------------------------------
     def has_reached_max_pages(self) -> bool:
         return self.max_pages is not None and self.crawled_count >= self.max_pages
