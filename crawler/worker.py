@@ -24,7 +24,7 @@ from crawler.storage.models.outbound_link_model import OutboundLink
 from crawler.storage.models.page_metadata_model import PageMetadata
 from crawler.storage.models.crawl_error_log_model import CrawlErrorLog
 from crawler.storage.models.domain_crawl_policy_model import DomainCrawlPolicy
-from tortoise.exceptions import DBError
+from tortoise.exceptions import OperationalError as DBError
 from tortoise.transactions import in_transaction
 
 from crawler.monitoring.metrics_server import (

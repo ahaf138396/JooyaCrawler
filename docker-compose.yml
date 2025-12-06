@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: jooya_database
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jdb_user
+      POSTGRES_PASSWORD: Amirho102030405060708090100
+      POSTGRES_DB: jooya_db
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - backend_net
+    ports:
+      - "5433:5432"
+
+  mongo:
+    image: mongo:7
+    container_name: jooya_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: strong_password_here
+    ports:
+      - "27017:27017"
+    networks:
+      - backend_net
+
+  crawler:
+    build: .
+    container_name: jooya_crawler
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - mongo
+    environment:
+      # -------------------- POSTGRES --------------------
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: jdb_user
+      POSTGRES_PASSWORD: Amirho102030405060708090100
+      POSTGRES_DB: jooya_db
+
+      # Same connection string for frameworks requiring single URL:
+      DATABASE_URL: postgresql://jdb_user:Amirho102030405060708090100@postgres:5432/jooya_db
+      POSTGRES_URL: postgresql://jdb_user:Amirho102030405060708090100@postgres:5432/jooya_db
+      RADAR_DATABASE_URL: postgresql://jdb_user:Amirho102030405060708090100@postgres:5432/jooya_db
+
+      # -------------------- MONGO -----------------------
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      MONGO_USER: admin
+      MONGO_PASSWORD: strong_password_here
+      MONGO_URI: mongodb://admin:strong_password_here@mongo:27017/jooyacrawlerdb
+
+      # -------------------- REDIS -----------------------
+      REDIS_URL: redis://redis:6379/0
+
+      # -------------------- WORKERS ---------------------
+      WORKERS: 12
+
+    networks:
+      - backend_net
+    ports:
+      - "8001:8000"
+
+
+networks:
+  backend_net:
+    driver: bridge
